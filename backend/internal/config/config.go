@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -14,6 +15,8 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
+	JWTSecret  string
+	JWTTTL     time.Duration
 }
 
 func LoadConfig() *Config {
@@ -29,6 +32,8 @@ func LoadConfig() *Config {
 		DBPassword: getEnv("DB_PASSWORD", ""),
 		DBName:     getEnv("DB_NAME", "postgres"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
+		JWTSecret:  getEnv("JWT_SECRET", ""),
+		JWTTTL:     time.Hour * 24,
 	}
 }
 

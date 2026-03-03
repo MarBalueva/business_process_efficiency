@@ -1,38 +1,35 @@
 package main
 
 import (
-	"database/sql"
-	"fmt"
 	"log"
 
-	_ "github.com/lib/pq"
+	"github.com/gin-gonic/gin"
 
 	"business_process_efficiency/internal/config"
+	"business_process_efficiency/internal/database"
+	"business_process_efficiency/internal/routes"
 )
 
+// @title Business Process Efficiency API
+// @version 1.0
+// @description API для системы прогнозирования ресурсов бизнес-процессов
+// @host localhost:8080
+// @BasePath /api
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
 func main() {
-
 	cfg := config.LoadConfig()
 
-	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.DBHost,
-		cfg.DBPort,
-		cfg.DBUser,
-		cfg.DBPassword,
-		cfg.DBName,
-		cfg.DBSSLMode,
-	)
+	database.InitDatabase(cfg)
+	database.Migrate()
 
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		log.Fatal("Ошибка открытия подключения:", err)
+	r := gin.Default()
+
+	routes.SetupRoutes(r, cfg.JWTSecret)
+
+	log.Println("Сервер запущен на :8080")
+	if err := r.Run(":8080"); err != nil {
+		log.Fatal("Ошибка при запуске сервера:", err)
 	}
-
-	err = db.Ping()
-	if err != nil {
-		log.Fatal("База не отвечает:", err)
-	}
-
-	fmt.Println("Успешное подключение к БД через .env!")
 }
