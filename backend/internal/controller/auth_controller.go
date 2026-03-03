@@ -36,18 +36,18 @@ func (ac *AuthController) Login(c *gin.Context) {
 
 	var user models.User
 	if err := database.DB.Preload("AccessGroups.AccessGroup").Where("login = ?", req.Login).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid login"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Неверный логин"})
 		return
 	}
 
 	if !ac.authService.CheckPasswordHash(req.Password, user.Password) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Неверный пароль"})
 		return
 	}
 
 	token, err := ac.authService.GenerateToken(&user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации токена"})
 		return
 	}
 
