@@ -18,14 +18,14 @@
 *.DS_Store
 
 # Frontend (Vue)
-/frontend/business_process_efficiency/node_modules/
-/frontend/business_process_efficiency/dist/
-/frontend/business_process_efficiency/.env
-/frontend/business_process_efficiency/.env.local
-/frontend/business_process_efficiency/.cache/
-/frontend/business_process_efficiency/.temp/
-/frontend/business_process_efficiency/*.log
-/frontend/node_modules/
+frontend/business_process_efficiency/node_modules/
+frontend/business_process_efficiency/dist/
+frontend/business_process_efficiency/.env
+frontend/business_process_efficiency/.env.local
+frontend/business_process_efficiency/.cache/
+frontend/business_process_efficiency/.temp/
+frontend/business_process_efficiency/*.log
+frontend/node_modules/
 
 # npm debug logs
 npm-debug.log*

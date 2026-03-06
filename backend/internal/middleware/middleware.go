@@ -32,8 +32,10 @@ func JWTMiddleware(auth *service.AuthService) gin.HandlerFunc {
 	}
 }
 
-func RequireAccess(auth *service.AuthService, code string) gin.HandlerFunc {
+func RequireAccess(auth *service.AuthService, codes ...string) gin.HandlerFunc {
+
 	return func(c *gin.Context) {
+
 		claimsVal, exists := c.Get("user_claims")
 		if !exists {
 			c.JSON(http.StatusForbidden, gin.H{"error": "No claims"})
@@ -42,12 +44,15 @@ func RequireAccess(auth *service.AuthService, code string) gin.HandlerFunc {
 		}
 
 		claims := claimsVal.(jwt.MapClaims)
-		if !auth.HasAccess(claims, code) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			c.Abort()
-			return
+
+		for _, code := range codes {
+			if auth.HasAccess(claims, code) {
+				c.Next()
+				return
+			}
 		}
 
-		c.Next()
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		c.Abort()
 	}
 }

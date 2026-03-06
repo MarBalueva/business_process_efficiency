@@ -1,13 +1,23 @@
 <template>
-  <div id="app">
-    <router-view />
+  <div class="layout">
+
+    <Sidebar v-if="$route.path !== '/login'" />
+
+    <main class="content">
+      <router-view />
+    </main>
+
   </div>
 </template>
 
 <script>
+import Sidebar from "./components/Sidebar.vue"
+
 export default {
-  name: "App"
-};
+  components: {
+    Sidebar
+  }
+}
 </script>
 
 <style>
@@ -19,9 +29,17 @@ body, html, #app {
   background-color: #f5f7fa;
 }
 
-#app {
+.layout {
   display: flex;
-  justify-content: center;
-  align-items: center;
+  height: 100vh;
+  font-family: 'Inter', sans-serif;
 }
+
+.content {
+  flex: 1;
+  padding: 40px;
+  background-color: #f5f7fa;
+  overflow-y: auto;
+}
+
 </style>
