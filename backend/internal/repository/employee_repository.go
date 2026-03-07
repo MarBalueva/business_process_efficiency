@@ -31,7 +31,6 @@ func (r *EmployeeRepository) Create(employee *models.Employee, hr *models.Employ
 		tx.Rollback()
 		return err
 	}
-
 	return tx.Commit().Error
 }
 
@@ -94,6 +93,7 @@ func (r *EmployeeRepository) GetByID(id uint) (*models.EmployeeFullResponse, err
 		HireDate:   hr.HireDate,
 		FireDate:   hr.FireDate,
 		CreatedAt:  hr.Employee.CreatedAt,
+		Salary:     hr.Salary,
 	}
 
 	return &resp, nil

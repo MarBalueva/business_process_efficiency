@@ -28,14 +28,17 @@ func JWTMiddleware(auth *service.AuthService) gin.HandlerFunc {
 		}
 
 		c.Set("user_claims", claims)
+
+		if uid, ok := claims["user_id"].(float64); ok {
+			c.Set("user_id", uint(uid))
+		}
+
 		c.Next()
 	}
 }
 
 func RequireAccess(auth *service.AuthService, codes ...string) gin.HandlerFunc {
-
 	return func(c *gin.Context) {
-
 		claimsVal, exists := c.Get("user_claims")
 		if !exists {
 			c.JSON(http.StatusForbidden, gin.H{"error": "No claims"})
@@ -43,7 +46,12 @@ func RequireAccess(auth *service.AuthService, codes ...string) gin.HandlerFunc {
 			return
 		}
 
-		claims := claimsVal.(jwt.MapClaims)
+		claims, ok := claimsVal.(jwt.MapClaims)
+		if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Invalid claims"})
+			c.Abort()
+			return
+		}
 
 		for _, code := range codes {
 			if auth.HasAccess(claims, code) {

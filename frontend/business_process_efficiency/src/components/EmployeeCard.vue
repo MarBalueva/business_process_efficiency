@@ -1,6 +1,9 @@
 <template>
   <div class="employee-page-container">
     <div class="employee-card">
+
+      <button class="back-btn" @click="$router.push('/employees')">← Назад</button>
+
       <h2 class="employee-title">{{ fullName }}</h2>
 
       <div class="tabs">
@@ -29,18 +32,30 @@
             </div>
             <div class="form-group">
               <label>Отдел</label>
-              <input v-model="employee.department" type="text" />
+              <select v-model="employee.department_id">
+                <option value="" disabled>Выберите отдел</option>
+                <option v-for="d in departments" :key="d.ID" :value="d.ID">
+                  {{ d.Name }}
+                </option>
+              </select>
             </div>
             <div class="form-group">
               <label>Должность</label>
-              <input v-model="employee.position" type="text" />
+              <select v-model="employee.position_id">
+                <option value="" disabled>Выберите должность</option>
+                <option v-for="p in positions" :key="p.ID" :value="p.ID">
+                  {{ p.Name }}
+                </option>
+              </select>
             </div>
           </div>
 
           <div class="column">
-            <div class="form-group">
-              <label>Удаленно</label>
-              <input type="checkbox" v-model="employee.is_remote" />
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" v-model="employee.is_remote" />
+                Удаленно
+              </label>
             </div>
             <div class="form-group">
               <label>Дата рождения</label>
@@ -60,24 +75,208 @@
             </div>
           </div>
         </div>
+
         <button class="save-btn" @click="saveEmployee">Сохранить</button>
       </div>
 
-      <div v-if="activeTab === 'user'" class="tab-content">
-        <p>Здесь будут данные пользователя</p>
-      </div>
+    <div v-if="activeTab === 'user'" class="tab-content user-tab">
+
+    <div v-if="!user">
+
+        <p class="no-user">У сотрудника нет пользователя</p>
+
+        <button class="save-btn" @click="showCreateUserModal = true">
+        Добавить пользователя
+        </button>
+
     </div>
+
+    <div v-else class="user-info">
+
+        <div class="user-header">
+        <div class="user-login">
+            <b>Логин:</b> {{ user.Login }}
+        </div>
+
+        <button class="icon-btn" @click="showEditUserModal = true">
+            <Pencil :size="18"/>
+            Изменить
+        </button>
+        </div>
+
+        <div class="access-groups">
+
+        <div class="groups-header">
+            <b>Группы доступа</b>
+
+            <button class="icon-btn" @click="showAddGroupModal = true">
+            <Plus :size="18"/>
+            Добавить
+            </button>
+        </div>
+
+        <div v-if="userGroups.length === 0" class="no-groups">
+            Нет групп доступа
+        </div>
+
+        <div 
+            v-for="g in userGroups"
+            :key="g.AccessGroupID"
+            class="group-row"
+        >
+            <span>{{ g.Name }}</span>
+
+            <Trash2
+            class="delete-icon"
+            :size="18"
+            @click="removeGroup(g.AccessGroupID)"
+            />
+        </div>
+
+        </div>
+
+  </div>
+
+</div>
+
+    </div>
+    <div v-if="showCreateUserModal" class="modal-overlay">
+
+  <div class="modal">
+
+    <h3>Создать пользователя</h3>
+
+    <div class="form-group">
+      <label>Логин</label>
+      <input v-model="newUser.login" type="text"> 
+    </div>
+
+    <div class="form-group">
+      <label>Пароль</label>
+      <input v-model="newUser.password" type="password">
+    </div>
+
+    <div class="modal-actions">
+      <button class="save-btn" @click="createUser">Сохранить</button>
+      <button class="cancel-btn" @click="showCreateUserModal=false">Отмена</button>
+    </div>
+
+  </div>
+
+</div>
+
+<div v-if="showEditUserModal" class="modal-overlay">
+
+  <div class="modal">
+
+    <h3>Изменить пользователя</h3>
+
+    <div class="form-group">
+      <label>Логин</label>
+      <input v-model="editUser.login" type="text">
+    </div>
+
+    <div class="form-group">
+      <label>Пароль</label>
+      <input v-model="editUser.password" type="password">
+    </div>
+
+    <div class="modal-actions">
+      <button class="save-btn" @click="updateUser">Сохранить</button>
+      <button class="cancel-btn" @click="showEditUserModal=false">Отмена</button>
+    </div>
+
+  </div>
+
+</div>
+
+<div v-if="showAddGroupModal" class="modal-overlay">
+
+  <div class="modal">
+
+    <h3>Добавить группу доступа</h3>
+
+    <div class="form-group">
+      <label>Группа</label>
+
+      <select v-model="selectedGroup">
+        <option value="">Выберите группу</option>
+
+        <option
+          v-for="g in accessGroups"
+          :key="g.ID"
+          :value="g.ID"
+        >
+          {{ g.Name }}
+        </option>
+
+      </select>
+
+    </div>
+
+    <div class="modal-actions">
+      <button class="save-btn" @click="addGroup">Добавить</button>
+      <button class="cancel-btn" @click="showAddGroupModal=false">Отмена</button>
+    </div>
+
+  </div>
+
+</div>
+    <div v-if="toast.show" class="toast">{{ toast.message }}</div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, computed } from "vue"
 import { useRoute } from "vue-router"
+import { Plus, Trash2, Pencil } from "lucide-vue-next"
 import api from "../api/axios"
 
 const route = useRoute()
 const employee = ref({})
 const activeTab = ref("data")
+const departments = ref([])
+const positions = ref([])
+
+const user = ref(null)
+const userGroups = ref([])
+const accessGroups = ref([])
+
+const showCreateUserModal = ref(false)
+const showEditUserModal = ref(false)
+const showAddGroupModal = ref(false)
+
+const selectedGroup = ref("")
+
+const newUser = ref({
+  login: "",
+  password: ""
+})
+
+const editUser = ref({
+  login: "",
+  password: ""
+})
+
+const toast = ref({ show: false, message: "" })
+
+const showToast = (msg) => {
+  toast.value.message = msg
+  toast.value.show = true
+  setTimeout(() => (toast.value.show = false), 2500)
+}
+
+const fetchDictionaries = async () => {
+  const token = localStorage.getItem("jwt")
+  try {
+    const res = await api.get("/dict", { headers: { Authorization: `Bearer ${token}` } })
+    departments.value = res.data.departments || []
+    positions.value = res.data.positions || []
+    accessGroups.value = res.data.access_groups || []
+  } catch (err) {
+    console.error("Ошибка загрузки справочников:", err)
+  }
+}
 
 const fetchEmployee = async () => {
   try {
@@ -86,15 +285,136 @@ const fetchEmployee = async () => {
       headers: { Authorization: `Bearer ${token}` }
     })
     employee.value = {
-    ...res.data,
-    birth_date: formatForInput(res.data.birth_date),
-    hire_date: formatForInput(res.data.hire_date),
-    fire_date: res.data.fire_date ? formatForInput(res.data.fire_date) : '', 
-    created_at: formatForInput(res.data.created_at)
+      ...res.data,
+      birth_date: formatForInput(res.data.birth_date),
+      hire_date: formatForInput(res.data.hire_date),
+      fire_date: res.data.fire_date ? formatForInput(res.data.fire_date) : '', 
+      created_at: formatForInput(res.data.created_at)
     }
   } catch (err) {
     console.error("Ошибка загрузки сотрудника:", err)
   }
+}
+
+const fetchUser = async () => {
+
+  const token = localStorage.getItem("jwt")
+
+  try {
+
+    const res = await api.get(
+      `/users/by-employee/${route.params.id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+
+    user.value = res.data
+
+    editUser.value.login = res.data.login
+
+    fetchUserGroups()
+
+  } catch {
+    user.value = null
+  }
+
+}
+
+const fetchUserGroups = async () => {
+
+  const token = localStorage.getItem("jwt")
+
+  const res = await api.get(
+    `/users/${user.value.ID}/access-groups`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
+  const relations = res.data || []
+
+  userGroups.value = relations.map(rel => {
+
+    const group = accessGroups.value.find(
+      g => g.ID === rel.AccessGroupID
+    )
+
+    return {
+      AccessGroupID: rel.AccessGroupID,
+      Name: group ? group.Name : "Неизвестная группа"
+    }
+
+  })
+
+}
+
+const createUser = async () => {
+
+  const token = localStorage.getItem("jwt")
+
+  await api.post(
+    "/users",
+    {
+      login: newUser.value.login,
+      password: newUser.value.password,
+      employee_id: Number(route.params.id)
+    },
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
+  showCreateUserModal.value = false
+
+  showToast("Пользователь создан")
+
+  fetchUser()
+
+}
+
+const updateUser = async () => {
+
+  const token = localStorage.getItem("jwt")
+
+  await api.put(
+    `/users/${user.value.ID}`,
+    {
+      login: editUser.value.login,
+      password: editUser.value.password
+    },
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
+  showEditUserModal.value = false
+
+  showToast("Пользователь обновлен")
+
+  fetchUser()
+
+}
+
+const addGroup = async () => {
+
+  const token = localStorage.getItem("jwt")
+
+  await api.post(
+    `/users/${user.value.ID}/access-groups`,
+    { access_group_id: selectedGroup.value },
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
+  showAddGroupModal.value = false
+
+  fetchUserGroups()
+
+}
+
+const removeGroup = async (groupId) => {
+
+  const token = localStorage.getItem("jwt")
+
+  await api.delete(
+    `/users/${user.value.ID}/access-groups/${groupId}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
+  fetchUserGroups()
+
 }
 
 const formatForInput = (isoString) => {
@@ -110,23 +430,47 @@ const saveEmployee = async () => {
     const token = localStorage.getItem("jwt")
 
     const payload = {
-    ...employee.value,
-    birth_date: employee.value.birth_date || null,
-    hire_date: employee.value.hire_date || null,
-    fire_date: employee.value.fire_date || null,
+      last_name: employee.value.last_name,
+      first_name: employee.value.first_name,
+      middle_name: employee.value.middle_name,
+
+      birth_date: employee.value.birth_date || null,
+      hire_date: employee.value.hire_date || null,
+      fire_date: employee.value.fire_date || null,
+
+      department_id: employee.value.department_id,
+      position_id: employee.value.position_id,
+
+      is_remote: employee.value.is_remote,
+      salary: Number(employee.value.salary)
     }
 
     await api.put(`/employees/${route.params.id}`, payload, {
       headers: { Authorization: `Bearer ${token}` }
     })
-    alert("Сотрудник сохранен")
+
+    showToast("Сотрудник сохранен")
+
   } catch (err) {
     console.error("Ошибка сохранения:", err)
-    alert("Ошибка при сохранении")
+    showToast("Ошибка при сохранении")
   }
 }
 
-onMounted(fetchEmployee)
+const mapDictionaryIds = () => {
+  const dep = departments.value.find(d => d.Name === employee.value.department)
+  const pos = positions.value.find(p => p.Name === employee.value.position)
+
+  if (dep) employee.value.department_id = dep.ID
+  if (pos) employee.value.position_id = pos.ID
+}
+
+onMounted(async () => {
+  await fetchDictionaries()
+  await fetchEmployee()
+  await fetchUser()
+  mapDictionaryIds()
+})
 
 const fullName = computed(() => {
   return `${employee.value.last_name || ''} ${employee.value.first_name || ''} ${employee.value.middle_name || ''}`
@@ -149,18 +493,41 @@ const fullName = computed(() => {
   width: 100%;
   max-width: 1000px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: relative;
+}
+
+.back-btn {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  padding: 6px 12px;
+  background: #f3f4f6;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: 0.2s;
+}
+
+.back-btn:hover {
+  background: #e0e0e0;
 }
 
 .employee-title {
   font-size: 28px;
   margin-bottom: 20px;
   color: #333;
+  text-align: center;
 }
 
 .tabs {
   display: flex;
   gap: 10px;
   margin-bottom: 20px;
+  justify-content: center;
 }
 
 .tabs button {
@@ -213,24 +580,31 @@ const fullName = computed(() => {
 
 .form-group input[type="text"],
 .form-group input[type="date"],
-.form-group input[type="number"] {
-  padding: 8px 12px;
+.form-group input[type="number"],
+.form-group input[type="password"],
+.form-group select {
+  padding: 10px;
   border-radius: 6px;
   border: 1px solid #ccc;
   transition: border-color 0.2s;
+  box-sizing:border-box;
+  font-size:14px;
 }
 
 .form-group input[type="text"]:focus,
 .form-group input[type="date"]:focus,
-.form-group input[type="number"]:focus {
+.form-group input[type="number"]:focus,
+.form-group input[type="password"]:focus,
+.form-group select:focus {
   border-color: #4f46e5;
   outline: none;
 }
 
-.form-group input[type="checkbox"] {
+.checkbox-group input[type="checkbox"] {
   width: 20px;
   height: 20px;
-  margin-top: 4px;
+  margin-right: 8px;
+  vertical-align: middle;
 }
 
 .save-btn {
@@ -247,5 +621,89 @@ const fullName = computed(() => {
 
 .save-btn:hover {
   background-color: #3730a3;
+}
+
+.user-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.groups-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-top:10px;
+}
+
+.group-row{
+  display:flex;
+  justify-content:space-between;
+  padding:6px 0;
+  border-bottom:1px solid #eee;
+}
+
+.icon-btn{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border:none;
+  background:#f3f4f6;
+  border-radius:6px;
+  cursor:pointer;
+}
+
+.icon-btn:hover{
+  background:#e5e7eb;
+}
+
+.delete-icon{
+  cursor:pointer;
+  color:#ef4444;
+}
+
+.modal-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.3);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.modal{
+  background:white;
+  padding:24px;
+  border-radius:10px;
+  width:360px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+
+.modal-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+}
+
+.cancel-btn{
+  padding:10px 14px;
+  background:#e5e7eb;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+}
+
+.toast{
+  position:fixed;
+  bottom:30px;
+  right:30px;
+  background:#4f46e5;
+  color:white;
+  padding:12px 18px;
+  border-radius:8px;
+  box-shadow:0 4px 10px rgba(0,0,0,0.2);
 }
 </style>

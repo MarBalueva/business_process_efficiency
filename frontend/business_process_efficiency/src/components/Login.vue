@@ -55,7 +55,7 @@ export default {
 
         localStorage.setItem('jwt', token)
 
-        this.$router.push('/users')
+        this.$router.push('/profile')
       } catch (err) {
         console.error(err)
         if (err.response && err.response.data && err.response.data.error) {

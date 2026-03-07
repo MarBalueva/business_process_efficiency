@@ -15,6 +15,14 @@ type User struct {
 	AccessGroups []UserAccessGroup `gorm:"foreignKey:UserID"`
 }
 
+type ProfileUpdateRequest struct {
+	Password string `json:"password" example:"secret123"`
+
+	LastName   string `json:"last_name" example:"Иванов"`
+	FirstName  string `json:"first_name" example:"Иван"`
+	MiddleName string `json:"middle_name" example:"Иванович"`
+}
+
 type UserAccessGroup struct {
 	UserID uint
 
@@ -26,4 +34,15 @@ type UserAccessGroup struct {
 
 	CreatedAt time.Time
 	DeletedAt *time.Time `gorm:"index" json:"-" swaggerignore:"true"`
+}
+
+type CreateUserRequest struct {
+	Login      string `json:"login" binding:"required"`
+	Password   string `json:"password" binding:"required"`
+	EmployeeID uint   `json:"employee_id" binding:"required"`
+}
+
+type UpdateUserRequest struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
 }

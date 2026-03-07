@@ -29,6 +29,10 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 	dictService := service.NewDictionaryService(dictRepo)
 	dictController := controller.NewDictionaryController(dictService)
 
+	profileRepo := repository.NewProfileRepository(database.DB)
+	profileService := service.NewProfileService(profileRepo)
+	profileController := controller.NewProfileController(profileService)
+
 	api := r.Group("/api")
 	{
 		api.POST("/login", authController.Login)
@@ -60,7 +64,6 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 			func() interface{} { return &[]models.AccessGroup{} },
 		)
 
-		// Все авторизованные пользователи
 		authRoutes := api.Group("/")
 		authRoutes.Use(middleware.JWTMiddleware(authService))
 		authRoutes.Use(middleware.RequireAccess(authService, "header", "employee", "analyst", "admin"))
@@ -68,9 +71,11 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 			authRoutes.GET("/employees", employeeController.GetAllEmployees)
 			authRoutes.GET("/employees/:id", employeeController.GetEmployee)
 			authRoutes.GET("/dict", dictController.GetAll)
+
+			authRoutes.GET("/profile/me", profileController.GetProfile)
+			authRoutes.PUT("/profile/me", profileController.UpdateProfile)
 		}
 
-		// Только администратор
 		adminRoutes := api.Group("/")
 		adminRoutes.Use(middleware.JWTMiddleware(authService))
 		adminRoutes.Use(middleware.RequireAccess(authService, "admin"))
@@ -81,6 +86,15 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 
 			adminRoutes.POST("/users", userController.Create)
 			adminRoutes.GET("/users", userController.GetAll)
+
+			adminRoutes.GET("/users/:id", userController.GetByID)
+			adminRoutes.PUT("/users/:id", userController.Update)
+			adminRoutes.DELETE("/users/:id", userController.Delete)
+
+			adminRoutes.GET("/users/:id/access-groups", userController.GetUserAccessGroups)
+			adminRoutes.POST("/users/:id/access-groups", userController.AddAccessGroup)
+			adminRoutes.DELETE("/users/:id/access-groups/:group_id", userController.RemoveAccessGroup)
+			adminRoutes.GET("/users/by-employee/:employeeId", userController.GetByEmployee)
 		}
 	}
 

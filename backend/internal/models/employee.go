@@ -34,18 +34,10 @@ type EmployeeHR struct {
 	BirthDate time.Time
 	HireDate  time.Time
 	FireDate  *time.Time
-	Salary    float64
+	Salary    float64 `gorm:"column:salary"`
 
 	CreatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index" swaggerignore:"true"`
-}
-
-type ProfileUpdateRequest struct {
-	Password string `json:"password" example:"secret123"`
-
-	LastName   string `json:"last_name" example:"Иванов"`
-	FirstName  string `json:"first_name" example:"Иван"`
-	MiddleName string `json:"middle_name" example:"Иванович"`
 }
 
 type EmployeeFullResponse struct {
