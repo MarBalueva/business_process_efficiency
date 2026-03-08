@@ -33,6 +33,16 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 	profileService := service.NewProfileService(profileRepo)
 	profileController := controller.NewProfileController(profileService)
 
+	processRepo := repository.NewProcessRepository(database.DB)
+	processService := service.NewProcessService(processRepo)
+	processController := controller.NewProcessController(processService)
+
+	stepController := controller.NewStepController(processService)
+
+	measurementRepo := repository.NewMeasurementRepository(database.DB)
+	measurementService := service.NewMeasurementService(measurementRepo)
+	measurementController := controller.NewMeasurementController(measurementService)
+
 	api := r.Group("/api")
 	{
 		api.POST("/login", authController.Login)
@@ -65,6 +75,7 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 		)
 
 		authRoutes := api.Group("/")
+
 		authRoutes.Use(middleware.JWTMiddleware(authService))
 		authRoutes.Use(middleware.RequireAccess(authService, "header", "employee", "analyst", "admin"))
 		{
@@ -74,6 +85,42 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 
 			authRoutes.GET("/profile/me", profileController.GetProfile)
 			authRoutes.PUT("/profile/me", profileController.UpdateProfile)
+		}
+
+		processRoutes := api.Group("/processes")
+		processRoutes.Use(middleware.JWTMiddleware(authService))
+		processRoutes.Use(middleware.RequireAccess(authService, "analyst", "admin"))
+		{
+			// процессы
+			processRoutes.GET("/registry", processController.GetRegistry)
+			processRoutes.GET("/:id", processController.GetProcess)
+			processRoutes.POST("", processController.CreateProcess)
+			processRoutes.PUT("/:id", processController.UpdateProcess)
+			processRoutes.DELETE("/:id", processController.DeleteProcess)
+
+			// версии процессов
+			processRoutes.POST("/versions", processController.CreateVersion)
+			processRoutes.DELETE("/versions/:id", processController.DeleteVersion)
+
+			// этапы процессов
+			processRoutes.POST("/steps", stepController.CreateStep)
+			processRoutes.PUT("/steps/:id", stepController.UpdateStep)
+			processRoutes.DELETE("/steps/:id", stepController.DeleteStep)
+
+			// замеры времени этапов
+			processRoutes.POST("/measurements/start", measurementController.Start)
+			processRoutes.POST("/measurements/pause", measurementController.Pause)
+			processRoutes.POST("/measurements/resume", measurementController.Resume)
+			processRoutes.POST("/measurements/finish", measurementController.Finish)
+			processRoutes.POST("/measurements/reset", measurementController.Reset)
+		}
+
+		folderRoutes := api.Group("/process-folders")
+		folderRoutes.Use(middleware.JWTMiddleware(authService))
+		folderRoutes.Use(middleware.RequireAccess(authService, "analyst", "admin"))
+		{
+			folderRoutes.POST("", processController.CreateFolder)
+			folderRoutes.DELETE("/:id", processController.DeleteFolder)
 		}
 
 		adminRoutes := api.Group("/")

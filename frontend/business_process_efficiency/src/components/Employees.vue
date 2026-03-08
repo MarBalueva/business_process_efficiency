@@ -22,7 +22,7 @@
       <div class="employees-table">
 
         <div class="employees-row-header">
-            <span class="employee-name">ФИО</span>
+            <span class="employee-name-header">ФИО</span>
             <span class="employee-dept">Отдел</span>
             <span class="employee-pos">Должность</span>
             <span class="employee-remote">Удаленно</span>
@@ -323,6 +323,11 @@ onMounted(fetchEmployees)
   text-decoration:none;
   color:#4f46e5;
   font-weight:500;
+}
+
+.employee-name-header{
+  flex-basis: 350px;
+  text-align:left;
 }
 
 .employee-name:hover{

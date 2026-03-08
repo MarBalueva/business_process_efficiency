@@ -43,7 +43,16 @@ func Migrate() {
 		&models.EmployeeHR{},
 		&models.Position{},
 		&models.User{},
-		&models.UserAccessGroup{})
+		&models.UserAccessGroup{},
+		&models.ProcessFolder{},
+		&models.Process{},
+		&models.ProcessStep{},
+		&models.StepMetrics{},
+		&models.StepTimeStatistics{},
+		&models.StepMeasurement{},
+		&models.MeasurementPause{},
+		&models.ProcessStepLink{})
+
 	if err != nil {
 		log.Fatal("Ошибка миграции:", err)
 	}
