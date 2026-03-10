@@ -303,6 +303,18 @@ const analyticsSteps = computed(() => {
   })
 })
 
+const analyticsAllSteps = computed(() => {
+  const steps = Array.isArray(analyticsVersion.value?.Steps) ? [...analyticsVersion.value.Steps] : []
+  return steps.sort((a, b) => {
+    const orderA = Number(a?.StepOrder)
+    const orderB = Number(b?.StepOrder)
+    const idA = Number(a?.ID || 0)
+    const idB = Number(b?.ID || 0)
+    if (Number.isFinite(orderA) && Number.isFinite(orderB) && orderA !== orderB) return orderA - orderB
+    return idA - idB
+  })
+})
+
 const getStepName = (step) => step?.Name || `Этап #${step?.ID ?? ""}`
 const getStepExecutors = (step) => (Array.isArray(step?.StepExecutors) ? step.StepExecutors : [])
 const getStepMeasurements = (step) => (Array.isArray(step?.Measurements) ? step.Measurements : [])
@@ -313,6 +325,11 @@ const getStepActualMinutes = (step) => {
 const getStepPlannedMinutes = (step) => {
   const n = Number(step?.Metrics?.PlannedTimeMin)
   return Number.isFinite(n) ? n : 0
+}
+const getStepParallelIds = (step) => {
+  return (Array.isArray(step?.ParallelSteps) ? step.ParallelSteps : [])
+    .map((p) => Number(p?.ParallelStepID))
+    .filter((id) => Number.isFinite(id) && id > 0)
 }
 
 const employeeRateById = computed(() => {
@@ -365,12 +382,82 @@ const stepAnalyticsRows = computed(() => {
   }))
 })
 
-const totalProcessMinutes = computed(() =>
-  stepAnalyticsRows.value.reduce((acc, row) => acc + Number(row.actualMin || 0), 0)
-)
-const totalProcessCost = computed(() =>
-  stepAnalyticsRows.value.reduce((acc, row) => acc + Number(row.cost || 0), 0)
-)
+const stepProbabilityById = computed(() => {
+  const prob = new Map(stepAnalyticsRows.value.map((row) => [row.id, 1]))
+  for (const step of analyticsAllSteps.value) {
+    if (step?.Type !== "CONDITION") continue
+    const branches = Array.isArray(step?.ConditionBranches) ? step.ConditionBranches : []
+    for (const branch of branches) {
+      const nextId = Number(branch?.NextStepID)
+      const p = Number(branch?.ProbabilityPercent)
+      if (!Number.isFinite(nextId) || !Number.isFinite(p) || p < 0) continue
+      if (!prob.has(nextId)) continue
+      const current = Number(prob.get(nextId) || 1)
+      prob.set(nextId, current * (p / 100))
+    }
+  }
+  return prob
+})
+
+const groupedExpectedTotals = computed(() => {
+  const rows = stepAnalyticsRows.value
+  if (rows.length === 0) return { minutes: 0, cost: 0 }
+
+  const rowById = new Map(rows.map((r) => [r.id, r]))
+  const parent = new Map(rows.map((r) => [r.id, r.id]))
+  const find = (x) => {
+    let p = parent.get(x)
+    while (p !== parent.get(p)) p = parent.get(p)
+    let cur = x
+    while (parent.get(cur) !== p) {
+      const next = parent.get(cur)
+      parent.set(cur, p)
+      cur = next
+    }
+    return p
+  }
+  const union = (a, b) => {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent.set(rb, ra)
+  }
+
+  for (const step of analyticsSteps.value) {
+    const id = Number(step?.ID)
+    if (!Number.isFinite(id) || !rowById.has(id)) continue
+    for (const pid of getStepParallelIds(step)) {
+      if (rowById.has(pid)) union(id, pid)
+    }
+  }
+
+  const groups = new Map()
+  for (const row of rows) {
+    const root = find(row.id)
+    if (!groups.has(root)) groups.set(root, [])
+    groups.get(root).push(row)
+  }
+
+  let minutes = 0
+  let cost = 0
+  for (const groupRows of groups.values()) {
+    let groupMaxDuration = 0
+    let groupCost = 0
+    for (const row of groupRows) {
+      const weight = Number(stepProbabilityById.value.get(row.id) ?? 1)
+      const adjustedDuration = Number(row.actualMin || 0) * weight
+      const adjustedCost = Number(row.cost || 0) * weight
+      groupMaxDuration = Math.max(groupMaxDuration, adjustedDuration)
+      groupCost += adjustedCost
+    }
+    minutes += groupMaxDuration
+    cost += groupCost
+  }
+
+  return { minutes, cost }
+})
+
+const totalProcessMinutes = computed(() => groupedExpectedTotals.value.minutes)
+const totalProcessCost = computed(() => groupedExpectedTotals.value.cost)
 
 const waitingRows = computed(() => {
   const rows = []

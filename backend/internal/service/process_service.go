@@ -103,7 +103,7 @@ func (s *ProcessService) DeleteVersion(id uint) error {
 }
 
 func (s *ProcessService) CreateStep(step *models.ProcessStep) error {
-	if err := validateStepExecutorWorkloads(step); err != nil {
+	if err := validateStepRules(step); err != nil {
 		return err
 	}
 	return s.repo.CreateStep(step)
@@ -118,7 +118,7 @@ func (s *ProcessService) GetEmployeesByIDs(ids []uint, employees *[]models.Emplo
 }
 
 func (s *ProcessService) UpdateStep(step *models.ProcessStep) error {
-	if err := validateStepExecutorWorkloads(step); err != nil {
+	if err := validateStepRules(step); err != nil {
 		return err
 	}
 	return s.repo.UpdateStep(step)
@@ -126,6 +126,10 @@ func (s *ProcessService) UpdateStep(step *models.ProcessStep) error {
 
 func (s *ProcessService) DeleteStep(id uint) error {
 	return s.repo.DeleteStep(id)
+}
+
+func (s *ProcessService) ReorderSteps(processVersionID uint, orderedStepIDs []uint) error {
+	return s.repo.ReorderSteps(processVersionID, orderedStepIDs)
 }
 
 func (s *ProcessService) GetRegistryTree() ([]*models.ProcessRegistryFolder, error) {
@@ -215,7 +219,77 @@ func (s *ProcessService) MoveFolder(folderID uint, parentID *uint) error {
 	return s.repo.MoveFolder(folderID, parentID)
 }
 
-func validateStepExecutorWorkloads(step *models.ProcessStep) error {
+func validateStepRules(step *models.ProcessStep) error {
+	isExecutorAllowed := step.Type == models.StepOperation || step.Type == models.StepSubprocess
+	if !isExecutorAllowed && (len(step.StepExecutors) > 0 || len(step.Executors) > 0) {
+		return fmt.Errorf("executors are allowed only for OPERATION and SUBPROCESS")
+	}
+
+	if len(step.ParallelSteps) > 0 {
+		return fmt.Errorf("parallel steps are deprecated; use PARALLEL_GATEWAY with parallel branches")
+	}
+
+	if step.Type == models.StepParallelGateway {
+		if len(step.ParallelBranches) > 0 {
+			seenParallelBranches := make(map[uint]struct{}, len(step.ParallelBranches))
+			for _, b := range step.ParallelBranches {
+				if b.NextStepID == 0 {
+					return fmt.Errorf("parallel branch nextStepId is required")
+				}
+				if _, ok := seenParallelBranches[b.NextStepID]; ok {
+					return fmt.Errorf("parallel branch nextStepId %d duplicated", b.NextStepID)
+				}
+				seenParallelBranches[b.NextStepID] = struct{}{}
+			}
+		}
+	} else if len(step.ParallelBranches) > 0 {
+		return fmt.Errorf("parallel branches are allowed only for PARALLEL_GATEWAY")
+	}
+
+	if step.Type == models.StepCondition {
+		if len(step.ConditionBranches) == 0 {
+			return nil
+		}
+
+		seen := make(map[uint]struct{}, len(step.ConditionBranches))
+		sum := 0.0
+		for _, b := range step.ConditionBranches {
+			if b.NextStepID == 0 {
+				return fmt.Errorf("condition branch nextStepId is required")
+			}
+			if _, ok := seen[b.NextStepID]; ok {
+				return fmt.Errorf("condition branch nextStepId %d duplicated", b.NextStepID)
+			}
+			seen[b.NextStepID] = struct{}{}
+			if b.ProbabilityPercent < 0 || b.ProbabilityPercent > 100 {
+				return fmt.Errorf("condition branch probability for step %d must be in range 0..100", b.NextStepID)
+			}
+			sum += b.ProbabilityPercent
+		}
+		if math.Abs(sum-100) > 0.0001 {
+			return fmt.Errorf("sum of condition branch probabilities must be exactly 100")
+		}
+	} else if len(step.ConditionBranches) > 0 {
+		return fmt.Errorf("condition branches are allowed only for CONDITION")
+	}
+
+	if step.Type == models.StepParallelEnd {
+		if step.ClosesStepID == nil || *step.ClosesStepID == 0 {
+			return fmt.Errorf("parallel end must reference closesStepId")
+		}
+		if len(step.PreviousSteps) == 0 {
+			return fmt.Errorf("parallel end must contain previous steps")
+		}
+	}
+	if step.Type == models.StepConditionEnd {
+		if step.ClosesStepID == nil || *step.ClosesStepID == 0 {
+			return fmt.Errorf("condition end must reference closesStepId")
+		}
+		if len(step.PreviousSteps) == 0 {
+			return fmt.Errorf("condition end must contain previous steps")
+		}
+	}
+
 	if len(step.StepExecutors) == 0 {
 		return nil
 	}

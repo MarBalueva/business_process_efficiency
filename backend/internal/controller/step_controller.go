@@ -25,22 +25,46 @@ type ExecutorLoadRequest struct {
 	WorkloadPercent float64 `json:"workloadPercent"`
 }
 
+type ConditionBranchRequest struct {
+	NextStepID          uint    `json:"nextStepId" binding:"required"`
+	ProbabilityPercent  float64 `json:"probabilityPercent"`
+}
+
+type ParallelBranchRequest struct {
+	NextStepID uint `json:"nextStepId" binding:"required"`
+}
+
 type CreateStepRequest struct {
 	ProcessVersionID uint                  `json:"processVersionId" binding:"required"`
 	Name             string                `json:"name" binding:"required"`
-	Type             string                `json:"type" binding:"required,oneof=START END INTERMEDIATE SUBPROCESS OPERATION CONDITION"`
+	Type             string                `json:"type" binding:"required,oneof=START END INTERMEDIATE SUBPROCESS OPERATION CONDITION PARALLEL_GATEWAY PARALLEL_END CONDITION_END"`
 	Description      string                `json:"description,omitempty"`
+	ClosesStepID     *uint                 `json:"closesStepId,omitempty"`
+	PreviousStepIDs  []uint                `json:"previousStepIds,omitempty"`
 	ExecutorIDs      []uint                `json:"executorIds,omitempty"`
 	ExecutorLoads    []ExecutorLoadRequest `json:"executorLoads,omitempty"`
+	ParallelStepIDs  []uint                `json:"parallelStepIds,omitempty"`
+	ParallelBranches []ParallelBranchRequest `json:"parallelBranches,omitempty"`
+	ConditionBranches []ConditionBranchRequest `json:"conditionBranches,omitempty"`
 }
 
 type UpdateStepRequest struct {
 	Name          string                `json:"Name" binding:"required"`
 	Type          models.StepType       `json:"Type" binding:"required"`
 	Description   string                `json:"Description,omitempty"`
+	ClosesStepID  *uint                 `json:"ClosesStepId,omitempty"`
+	PreviousStepIDs []uint              `json:"PreviousStepIds,omitempty"`
 	Executors     []models.Employee     `json:"Executors,omitempty"`
 	ExecutorLoads []ExecutorLoadRequest `json:"ExecutorLoads,omitempty"`
+	ParallelStepIDs []uint              `json:"ParallelStepIds,omitempty"`
+	ParallelBranches []ParallelBranchRequest `json:"ParallelBranches,omitempty"`
+	ConditionBranches []ConditionBranchRequest `json:"ConditionBranches,omitempty"`
 	Metrics       *models.StepMetrics   `json:"Metrics,omitempty"`
+}
+
+type ReorderStepsRequest struct {
+	ProcessVersionID uint   `json:"processVersionId" binding:"required"`
+	OrderedStepIDs   []uint `json:"orderedStepIds" binding:"required"`
 }
 
 // CreateStep godoc
@@ -76,6 +100,7 @@ func (h *StepController) CreateStep(c *gin.Context) {
 		Type:             models.StepType(req.Type),
 		Description:      req.Description,
 		StepOrder:        stepOrder,
+		ClosesStepID:     req.ClosesStepID,
 	}
 
 	if len(req.ExecutorLoads) > 0 {
@@ -91,6 +116,39 @@ func (h *StepController) CreateStep(c *gin.Context) {
 		for _, employeeID := range req.ExecutorIDs {
 			step.Executors = append(step.Executors, models.Employee{
 				ID: employeeID,
+			})
+		}
+	}
+
+	if len(req.ParallelStepIDs) > 0 {
+		step.ParallelSteps = make([]models.ProcessStepParallel, 0, len(req.ParallelStepIDs))
+		for _, parallelID := range req.ParallelStepIDs {
+			step.ParallelSteps = append(step.ParallelSteps, models.ProcessStepParallel{ParallelStepID: parallelID})
+		}
+	}
+	if len(req.ParallelBranches) > 0 {
+		step.ParallelBranches = make([]models.ProcessParallelBranch, 0, len(req.ParallelBranches))
+		for _, b := range req.ParallelBranches {
+			step.ParallelBranches = append(step.ParallelBranches, models.ProcessParallelBranch{
+				NextStepID: b.NextStepID,
+			})
+		}
+	}
+
+	if len(req.ConditionBranches) > 0 {
+		step.ConditionBranches = make([]models.ProcessConditionBranch, 0, len(req.ConditionBranches))
+		for _, b := range req.ConditionBranches {
+			step.ConditionBranches = append(step.ConditionBranches, models.ProcessConditionBranch{
+				NextStepID:          b.NextStepID,
+				ProbabilityPercent:  b.ProbabilityPercent,
+			})
+		}
+	}
+	if len(req.PreviousStepIDs) > 0 {
+		step.PreviousSteps = make([]models.ProcessStepPrevious, 0, len(req.PreviousStepIDs))
+		for _, prevID := range req.PreviousStepIDs {
+			step.PreviousSteps = append(step.PreviousSteps, models.ProcessStepPrevious{
+				PreviousStepID: prevID,
 			})
 		}
 	}
@@ -130,6 +188,7 @@ func (h *StepController) UpdateStep(c *gin.Context) {
 		Name:        req.Name,
 		Type:        req.Type,
 		Description: req.Description,
+		ClosesStepID: req.ClosesStepID,
 		Metrics:     req.Metrics,
 	}
 
@@ -143,6 +202,39 @@ func (h *StepController) UpdateStep(c *gin.Context) {
 		}
 	} else if len(req.Executors) > 0 {
 		step.Executors = req.Executors
+	}
+
+	if req.ParallelStepIDs != nil {
+		step.ParallelSteps = make([]models.ProcessStepParallel, 0, len(req.ParallelStepIDs))
+		for _, parallelID := range req.ParallelStepIDs {
+			step.ParallelSteps = append(step.ParallelSteps, models.ProcessStepParallel{ParallelStepID: parallelID})
+		}
+	}
+	if req.ParallelBranches != nil {
+		step.ParallelBranches = make([]models.ProcessParallelBranch, 0, len(req.ParallelBranches))
+		for _, b := range req.ParallelBranches {
+			step.ParallelBranches = append(step.ParallelBranches, models.ProcessParallelBranch{
+				NextStepID: b.NextStepID,
+			})
+		}
+	}
+
+	if req.ConditionBranches != nil {
+		step.ConditionBranches = make([]models.ProcessConditionBranch, 0, len(req.ConditionBranches))
+		for _, b := range req.ConditionBranches {
+			step.ConditionBranches = append(step.ConditionBranches, models.ProcessConditionBranch{
+				NextStepID:          b.NextStepID,
+				ProbabilityPercent:  b.ProbabilityPercent,
+			})
+		}
+	}
+	if req.PreviousStepIDs != nil {
+		step.PreviousSteps = make([]models.ProcessStepPrevious, 0, len(req.PreviousStepIDs))
+		for _, prevID := range req.PreviousStepIDs {
+			step.PreviousSteps = append(step.PreviousSteps, models.ProcessStepPrevious{
+				PreviousStepID: prevID,
+			})
+		}
 	}
 
 	err := h.service.UpdateStep(&step)
@@ -180,4 +272,36 @@ func (h *StepController) DeleteStep(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// ReorderSteps godoc
+// @Summary Изменение порядка этапов процесса
+// @Description Обновляет порядок этапов внутри версии процесса
+// @Tags process-steps
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param data body ReorderStepsRequest true "Reorder payload"
+// @Success 200 {object} map[string]bool "reordered"
+// @Failure 400 {object} map[string]string "error"
+// @Failure 500 {object} map[string]string "error"
+// @Router /processes/steps/reorder [post]
+func (h *StepController) ReorderSteps(c *gin.Context) {
+	var req ReorderStepsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(req.OrderedStepIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "orderedStepIds must not be empty"})
+		return
+	}
+
+	if err := h.service.ReorderSteps(req.ProcessVersionID, req.OrderedStepIDs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"reordered": true})
 }

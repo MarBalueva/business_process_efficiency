@@ -106,6 +106,7 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 			// этапы процессов
 			processRoutes.POST("/steps", stepController.CreateStep)
 			processRoutes.PUT("/steps/:id", stepController.UpdateStep)
+			processRoutes.POST("/steps/reorder", stepController.ReorderSteps)
 			processRoutes.DELETE("/steps/:id", stepController.DeleteStep)
 
 			// замеры времени этапов

@@ -15,6 +15,9 @@ const (
 	StepSubprocess   StepType = "SUBPROCESS"
 	StepOperation    StepType = "OPERATION"
 	StepCondition    StepType = "CONDITION"
+	StepParallelGateway StepType = "PARALLEL_GATEWAY"
+	StepParallelEnd     StepType = "PARALLEL_END"
+	StepConditionEnd    StepType = "CONDITION_END"
 )
 
 type ProcessFolder struct {
@@ -62,8 +65,6 @@ type ProcessVersion struct {
 
 	Version int
 
-	IsPublished bool
-
 	Steps []ProcessStep `gorm:"foreignKey:ProcessVersionID"`
 
 	CreatedAt time.Time
@@ -85,9 +86,15 @@ type ProcessStep struct {
 
 	SubprocessID *uint
 	Subprocess   *Process `gorm:"foreignKey:SubprocessID"`
+	ClosesStepID *uint
+	ClosesStep   *ProcessStep `gorm:"foreignKey:ClosesStepID"`
 
 	Executors     []Employee            `gorm:"many2many:process_step_executors"`
 	StepExecutors []ProcessStepExecutor `gorm:"foreignKey:ProcessStepID;references:ID"`
+	ParallelSteps []ProcessStepParallel `gorm:"foreignKey:ProcessStepID;references:ID"`
+	ParallelBranches []ProcessParallelBranch `gorm:"foreignKey:GatewayStepID;references:ID"`
+	ConditionBranches []ProcessConditionBranch `gorm:"foreignKey:ConditionStepID;references:ID"`
+	PreviousSteps []ProcessStepPrevious `gorm:"foreignKey:StepID;references:ID"`
 
 	Metrics          *StepMetrics      `gorm:"foreignKey:StepID"`
 	Measurements     []StepMeasurement `gorm:"foreignKey:StepID"`
@@ -106,6 +113,54 @@ type ProcessStepExecutor struct {
 
 func (ProcessStepExecutor) TableName() string {
 	return "process_step_executors"
+}
+
+type ProcessStepParallel struct {
+	ProcessStepID uint `gorm:"primaryKey;column:process_step_id"`
+	ParallelStepID uint `gorm:"primaryKey;column:parallel_step_id"`
+}
+
+func (ProcessStepParallel) TableName() string {
+	return "process_step_parallels"
+}
+
+type ProcessParallelBranch struct {
+	ID uint `gorm:"primaryKey"`
+
+	GatewayStepID uint `gorm:"column:gateway_step_id;index"`
+	GatewayStep   ProcessStep `gorm:"foreignKey:GatewayStepID"`
+
+	NextStepID uint `gorm:"column:next_step_id;index"`
+	NextStep   ProcessStep `gorm:"foreignKey:NextStepID"`
+}
+
+func (ProcessParallelBranch) TableName() string {
+	return "process_parallel_branches"
+}
+
+type ProcessConditionBranch struct {
+	ID uint `gorm:"primaryKey"`
+
+	ConditionStepID uint `gorm:"column:condition_step_id;index"`
+	ConditionStep   ProcessStep `gorm:"foreignKey:ConditionStepID"`
+
+	NextStepID uint `gorm:"column:next_step_id;index"`
+	NextStep   ProcessStep `gorm:"foreignKey:NextStepID"`
+
+	ProbabilityPercent float64 `gorm:"column:probability_percent"`
+}
+
+func (ProcessConditionBranch) TableName() string {
+	return "process_condition_branches"
+}
+
+type ProcessStepPrevious struct {
+	StepID uint `gorm:"primaryKey;column:step_id"`
+	PreviousStepID uint `gorm:"primaryKey;column:previous_step_id"`
+}
+
+func (ProcessStepPrevious) TableName() string {
+	return "process_step_previous"
 }
 
 type StepMetrics struct {

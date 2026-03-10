@@ -39,6 +39,10 @@ func (r *ProcessRepository) GetProcessByID(id uint) (*models.Process, error) {
 		}).
 		Preload("Versions.Steps.Executors").
 		Preload("Versions.Steps.StepExecutors.Employee").
+		Preload("Versions.Steps.ParallelSteps").
+		Preload("Versions.Steps.ParallelBranches").
+		Preload("Versions.Steps.ConditionBranches").
+		Preload("Versions.Steps.PreviousSteps").
 		Preload("Versions.Steps.Metrics.TimeStatistics").
 		Preload("Versions.Steps.Measurements").
 		Preload("Versions.Steps.Measurements.Pauses").
@@ -56,6 +60,10 @@ func (r *ProcessRepository) GetStepByID(id uint) (*models.ProcessStep, error) {
 
 	err := r.db.
 		Preload("StepExecutors.Employee").
+		Preload("ParallelSteps").
+		Preload("ParallelBranches").
+		Preload("ConditionBranches").
+		Preload("PreviousSteps").
 		Preload("Metrics.TimeStatistics").
 		Preload("Measurements").
 		Preload("Measurements.Pauses").
@@ -148,6 +156,7 @@ func (r *ProcessRepository) CreateStep(step *models.ProcessStep) error {
 		Type:             step.Type,
 		Description:      step.Description,
 		SubprocessID:     step.SubprocessID,
+		ClosesStepID:     step.ClosesStepID,
 		FinalDurationMin: step.FinalDurationMin,
 	}
 
@@ -158,6 +167,26 @@ func (r *ProcessRepository) CreateStep(step *models.ProcessStep) error {
 	step.ID = base.ID
 
 	if err := r.replaceStepExecutorsTx(tx, step.ID, step.StepExecutors, step.Executors); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := r.replaceStepParallelsTx(tx, step.ID, step.ParallelSteps); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := r.replaceParallelBranchesTx(tx, step.ID, step.ParallelBranches, step.Type); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := r.replaceConditionBranchesTx(tx, step.ID, step.ConditionBranches, step.Type); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := r.replaceStepPreviousTx(tx, step.ID, step.PreviousSteps); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := r.syncAutoClosingStepTx(tx, base); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -195,6 +224,9 @@ func (r *ProcessRepository) UpdateStep(step *models.ProcessStep) error {
 		"type":        step.Type,
 		"description": step.Description,
 	}
+	if step.ClosesStepID != nil || step.Type == models.StepParallelEnd || step.Type == models.StepConditionEnd {
+		updateFields["closes_step_id"] = step.ClosesStepID
+	}
 
 	if err := tx.Model(&models.ProcessStep{}).Where("id = ?", step.ID).Updates(updateFields).Error; err != nil {
 		tx.Rollback()
@@ -207,6 +239,49 @@ func (r *ProcessRepository) UpdateStep(step *models.ProcessStep) error {
 			tx.Rollback()
 			return err
 		}
+	}
+	if step.ParallelSteps != nil {
+		if err := r.replaceStepParallelsTx(tx, step.ID, step.ParallelSteps); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if step.ParallelBranches != nil {
+		if err := r.replaceParallelBranchesTx(tx, step.ID, step.ParallelBranches, step.Type); err != nil {
+			tx.Rollback()
+			return err
+		}
+	} else if step.Type != models.StepParallelGateway {
+		if err := tx.Where("gateway_step_id = ?", step.ID).Delete(&models.ProcessParallelBranch{}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if step.ConditionBranches != nil {
+		if err := r.replaceConditionBranchesTx(tx, step.ID, step.ConditionBranches, step.Type); err != nil {
+			tx.Rollback()
+			return err
+		}
+	} else if step.Type != models.StepCondition {
+		if err := tx.Where("condition_step_id = ?", step.ID).Delete(&models.ProcessConditionBranch{}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if step.PreviousSteps != nil {
+		if err := r.replaceStepPreviousTx(tx, step.ID, step.PreviousSteps); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if err := r.syncAutoClosingStepTx(tx, models.ProcessStep{
+		ID:               step.ID,
+		ProcessVersionID: currentStep.ProcessVersionID,
+		Name:             step.Name,
+		Type:             step.Type,
+	}); err != nil {
+		tx.Rollback()
+		return err
 	}
 
 	// Metrics toggle: nil means "disable metrics" from frontend.
@@ -378,6 +453,40 @@ func (r *ProcessRepository) DeleteStep(id uint) error {
 		tx.Rollback()
 		return err
 	}
+	if err := tx.Where("process_step_id = ? OR parallel_step_id = ?", id, id).Delete(&models.ProcessStepParallel{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Where("condition_step_id = ? OR next_step_id = ?", id, id).Delete(&models.ProcessConditionBranch{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Where("gateway_step_id = ? OR next_step_id = ?", id, id).Delete(&models.ProcessParallelBranch{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Where("step_id = ? OR previous_step_id = ?", id, id).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	var autoClosing []models.ProcessStep
+	if err := tx.Select("id").
+		Where("closes_step_id = ? AND (type = ? OR type = ?)", id, models.StepParallelEnd, models.StepConditionEnd).
+		Find(&autoClosing).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	for _, c := range autoClosing {
+		if err := tx.Where("step_id = ? OR previous_step_id = ?", c.ID, c.ID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Delete(&models.ProcessStep{}, c.ID).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
 
 	if err := tx.Delete(&models.ProcessStep{}, id).Error; err != nil {
 		tx.Rollback()
@@ -408,6 +517,70 @@ func (r *ProcessRepository) DeleteStep(id uint) error {
 	}
 
 	if err := r.rebuildStepLinksTx(tx, step.ProcessVersionID); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
+}
+
+func (r *ProcessRepository) ReorderSteps(processVersionID uint, orderedStepIDs []uint) error {
+	if processVersionID == 0 {
+		return errors.New("processVersionId is required")
+	}
+	if len(orderedStepIDs) == 0 {
+		return errors.New("orderedStepIds must not be empty")
+	}
+
+	tx := r.db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	var existingSteps []models.ProcessStep
+	if err := tx.
+		Select("id", "step_order").
+		Where("process_version_id = ?", processVersionID).
+		Order("step_order ASC, id ASC").
+		Find(&existingSteps).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if len(existingSteps) != len(orderedStepIDs) {
+		tx.Rollback()
+		return fmt.Errorf("orderedStepIds count mismatch: expected %d, got %d", len(existingSteps), len(orderedStepIDs))
+	}
+
+	existingSet := make(map[uint]struct{}, len(existingSteps))
+	for _, s := range existingSteps {
+		existingSet[s.ID] = struct{}{}
+	}
+
+	seen := make(map[uint]struct{}, len(orderedStepIDs))
+	for _, id := range orderedStepIDs {
+		if _, ok := existingSet[id]; !ok {
+			tx.Rollback()
+			return fmt.Errorf("step %d does not belong to process version %d", id, processVersionID)
+		}
+		if _, duplicated := seen[id]; duplicated {
+			tx.Rollback()
+			return fmt.Errorf("step %d duplicated in orderedStepIds", id)
+		}
+		seen[id] = struct{}{}
+	}
+
+	for idx, id := range orderedStepIDs {
+		nextOrder := idx + 1
+		if err := tx.Model(&models.ProcessStep{}).
+			Where("id = ? AND process_version_id = ?", id, processVersionID).
+			Update("step_order", nextOrder).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	if err := r.rebuildStepLinksTx(tx, processVersionID); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -487,6 +660,523 @@ func (r *ProcessRepository) replaceStepExecutorsTx(
 	}
 
 	return tx.Create(&rows).Error
+}
+
+func (r *ProcessRepository) replaceStepParallelsTx(
+	tx *gorm.DB,
+	stepID uint,
+	parallels []models.ProcessStepParallel,
+) error {
+	var oldRows []models.ProcessStepParallel
+	if err := tx.Where("process_step_id = ?", stepID).Find(&oldRows).Error; err != nil {
+		return err
+	}
+	oldSet := make(map[uint]struct{}, len(oldRows))
+	for _, row := range oldRows {
+		oldSet[row.ParallelStepID] = struct{}{}
+	}
+
+	if err := tx.Where("process_step_id = ?", stepID).Delete(&models.ProcessStepParallel{}).Error; err != nil {
+		return err
+	}
+
+	newSet := make(map[uint]struct{}, len(parallels))
+	for _, p := range parallels {
+		if p.ParallelStepID == 0 || p.ParallelStepID == stepID {
+			continue
+		}
+		newSet[p.ParallelStepID] = struct{}{}
+	}
+
+	for parallelID := range newSet {
+		row := models.ProcessStepParallel{ProcessStepID: stepID, ParallelStepID: parallelID}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+
+		var reverse models.ProcessStepParallel
+		err := tx.Where("process_step_id = ? AND parallel_step_id = ?", parallelID, stepID).First(&reverse).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Create(&models.ProcessStepParallel{ProcessStepID: parallelID, ParallelStepID: stepID}).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+
+	for oldParallelID := range oldSet {
+		if _, still := newSet[oldParallelID]; still {
+			continue
+		}
+		if err := tx.Where("process_step_id = ? AND parallel_step_id = ?", oldParallelID, stepID).Delete(&models.ProcessStepParallel{}).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *ProcessRepository) replaceConditionBranchesTx(
+	tx *gorm.DB,
+	stepID uint,
+	branches []models.ProcessConditionBranch,
+	stepType models.StepType,
+) error {
+	var oldRows []models.ProcessConditionBranch
+	if err := tx.Where("condition_step_id = ?", stepID).Find(&oldRows).Error; err != nil {
+		return err
+	}
+	oldNext := make(map[uint]struct{}, len(oldRows))
+	for _, row := range oldRows {
+		oldNext[row.NextStepID] = struct{}{}
+	}
+
+	if err := tx.Where("condition_step_id = ?", stepID).Delete(&models.ProcessConditionBranch{}).Error; err != nil {
+		return err
+	}
+
+	if stepType != models.StepCondition || len(branches) == 0 {
+		for nextID := range oldNext {
+			if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	rows := make([]models.ProcessConditionBranch, 0, len(branches))
+	newNext := make(map[uint]struct{}, len(branches))
+	for _, b := range branches {
+		if b.NextStepID == 0 {
+			continue
+		}
+		newNext[b.NextStepID] = struct{}{}
+		rows = append(rows, models.ProcessConditionBranch{
+			ConditionStepID:    stepID,
+			NextStepID:         b.NextStepID,
+			ProbabilityPercent: b.ProbabilityPercent,
+		})
+	}
+	if len(rows) == 0 {
+		for nextID := range oldNext {
+			if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := tx.Create(&rows).Error; err != nil {
+		return err
+	}
+
+	for nextID := range oldNext {
+		if _, still := newNext[nextID]; still {
+			continue
+		}
+		if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			return err
+		}
+	}
+	for nextID := range newNext {
+		if err := tx.Where("step_id = ?", nextID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&models.ProcessStepPrevious{StepID: nextID, PreviousStepID: stepID}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ProcessRepository) replaceParallelBranchesTx(
+	tx *gorm.DB,
+	stepID uint,
+	branches []models.ProcessParallelBranch,
+	stepType models.StepType,
+) error {
+	var oldRows []models.ProcessParallelBranch
+	if err := tx.Where("gateway_step_id = ?", stepID).Find(&oldRows).Error; err != nil {
+		return err
+	}
+	oldNext := make(map[uint]struct{}, len(oldRows))
+	for _, row := range oldRows {
+		oldNext[row.NextStepID] = struct{}{}
+	}
+
+	if err := tx.Where("gateway_step_id = ?", stepID).Delete(&models.ProcessParallelBranch{}).Error; err != nil {
+		return err
+	}
+
+	if stepType != models.StepParallelGateway || len(branches) == 0 {
+		for nextID := range oldNext {
+			if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	rows := make([]models.ProcessParallelBranch, 0, len(branches))
+	newNext := make(map[uint]struct{}, len(branches))
+	for _, b := range branches {
+		if b.NextStepID == 0 {
+			continue
+		}
+		newNext[b.NextStepID] = struct{}{}
+		rows = append(rows, models.ProcessParallelBranch{
+			GatewayStepID: stepID,
+			NextStepID:    b.NextStepID,
+		})
+	}
+	if len(rows) == 0 {
+		for nextID := range oldNext {
+			if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := tx.Create(&rows).Error; err != nil {
+		return err
+	}
+
+	for nextID := range oldNext {
+		if _, still := newNext[nextID]; still {
+			continue
+		}
+		if err := tx.Where("step_id = ? AND previous_step_id = ?", nextID, stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			return err
+		}
+	}
+	for nextID := range newNext {
+		if err := tx.Where("step_id = ?", nextID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&models.ProcessStepPrevious{StepID: nextID, PreviousStepID: stepID}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ProcessRepository) replaceStepPreviousTx(
+	tx *gorm.DB,
+	stepID uint,
+	previous []models.ProcessStepPrevious,
+) error {
+	var oldRows []models.ProcessStepPrevious
+	if err := tx.Where("step_id = ?", stepID).Find(&oldRows).Error; err != nil {
+		return err
+	}
+	oldPrevIDs := make([]uint, 0, len(oldRows))
+	for _, row := range oldRows {
+		oldPrevIDs = append(oldPrevIDs, row.PreviousStepID)
+	}
+
+	if err := tx.Where("step_id = ?", stepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+		return err
+	}
+	if err := r.removeImplicitBranchesByPreviousTx(tx, stepID, oldPrevIDs); err != nil {
+		return err
+	}
+
+	if len(previous) == 0 {
+		return nil
+	}
+	rows := make([]models.ProcessStepPrevious, 0, len(previous))
+	for _, p := range previous {
+		if p.PreviousStepID == 0 {
+			continue
+		}
+		rows = append(rows, models.ProcessStepPrevious{
+			StepID:         stepID,
+			PreviousStepID: p.PreviousStepID,
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := tx.Create(&rows).Error; err != nil {
+		return err
+	}
+	newPrevIDs := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		newPrevIDs = append(newPrevIDs, row.PreviousStepID)
+	}
+	if err := r.ensureImplicitBranchesByPreviousTx(tx, stepID, newPrevIDs); err != nil {
+		return err
+	}
+
+	// If user inserted a regular step between two linear steps, move follower:
+	// old follower(previous -> X) becomes follower(newStep -> X).
+	if len(rows) == 1 {
+		prevID := rows[0].PreviousStepID
+		if err := r.rewireLinearFollowerTx(tx, stepID, prevID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *ProcessRepository) removeImplicitBranchesByPreviousTx(tx *gorm.DB, stepID uint, prevIDs []uint) error {
+	seen := make(map[uint]struct{}, len(prevIDs))
+	for _, prevID := range prevIDs {
+		if prevID == 0 {
+			continue
+		}
+		if _, ok := seen[prevID]; ok {
+			continue
+		}
+		seen[prevID] = struct{}{}
+
+		var prevStep models.ProcessStep
+		if err := tx.Select("id", "type").First(&prevStep, prevID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+
+		switch prevStep.Type {
+		case models.StepCondition:
+			if err := tx.Where("condition_step_id = ? AND next_step_id = ?", prevID, stepID).
+				Delete(&models.ProcessConditionBranch{}).Error; err != nil {
+				return err
+			}
+		case models.StepParallelGateway:
+			if err := tx.Where("gateway_step_id = ? AND next_step_id = ?", prevID, stepID).
+				Delete(&models.ProcessParallelBranch{}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ProcessRepository) ensureImplicitBranchesByPreviousTx(tx *gorm.DB, stepID uint, prevIDs []uint) error {
+	seen := make(map[uint]struct{}, len(prevIDs))
+	for _, prevID := range prevIDs {
+		if prevID == 0 {
+			continue
+		}
+		if _, ok := seen[prevID]; ok {
+			continue
+		}
+		seen[prevID] = struct{}{}
+
+		var prevStep models.ProcessStep
+		if err := tx.Select("id", "type").First(&prevStep, prevID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+
+		switch prevStep.Type {
+		case models.StepCondition:
+			var count int64
+			if err := tx.Model(&models.ProcessConditionBranch{}).
+				Where("condition_step_id = ? AND next_step_id = ?", prevID, stepID).
+				Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				row := models.ProcessConditionBranch{
+					ConditionStepID:   prevID,
+					NextStepID:        stepID,
+					ProbabilityPercent: 0,
+				}
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+			}
+		case models.StepParallelGateway:
+			var count int64
+			if err := tx.Model(&models.ProcessParallelBranch{}).
+				Where("gateway_step_id = ? AND next_step_id = ?", prevID, stepID).
+				Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				row := models.ProcessParallelBranch{
+					GatewayStepID: prevID,
+					NextStepID:    stepID,
+				}
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ProcessRepository) rewireLinearFollowerTx(tx *gorm.DB, newStepID uint, prevID uint) error {
+	var prevStep models.ProcessStep
+	if err := tx.Select("id", "process_version_id", "type").First(&prevStep, prevID).Error; err != nil {
+		return err
+	}
+
+	// Branching sources are handled by explicit branch relations; do not auto-rewire them.
+	if prevStep.Type == models.StepCondition || prevStep.Type == models.StepParallelGateway {
+		return nil
+	}
+
+	type followerRow struct {
+		StepID uint
+		Type   models.StepType
+	}
+	var followers []followerRow
+	if err := tx.Table("process_step_previous p").
+		Select("p.step_id as step_id, s.type as type").
+		Joins("JOIN process_steps s ON s.id = p.step_id").
+		Where("p.previous_step_id = ? AND p.step_id <> ? AND s.process_version_id = ?", prevID, newStepID, prevStep.ProcessVersionID).
+		Order("s.step_order ASC, s.id ASC").
+		Scan(&followers).Error; err != nil {
+		return err
+	}
+	if len(followers) == 0 {
+		return nil
+	}
+
+	f := followers[0]
+	// Closing steps can have multiple previous links.
+	// Replace only this particular branch edge: prevID -> closing to newStepID -> closing.
+	if f.Type == models.StepConditionEnd || f.Type == models.StepParallelEnd {
+		return tx.Model(&models.ProcessStepPrevious{}).
+			Where("step_id = ? AND previous_step_id = ?", f.StepID, prevID).
+			Update("previous_step_id", newStepID).Error
+	}
+
+	if err := tx.Where("step_id = ?", f.StepID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+		return err
+	}
+
+	return tx.Create(&models.ProcessStepPrevious{
+		StepID:         f.StepID,
+		PreviousStepID: newStepID,
+	}).Error
+}
+
+func (r *ProcessRepository) syncAutoClosingStepTx(tx *gorm.DB, source models.ProcessStep) error {
+	switch source.Type {
+	case models.StepParallelGateway:
+		var branches []models.ProcessParallelBranch
+		if err := tx.Where("gateway_step_id = ?", source.ID).Find(&branches).Error; err != nil {
+			return err
+		}
+		if len(branches) == 0 {
+			return r.deleteClosingStepsBySourceTx(tx, source.ID, models.StepParallelEnd)
+		}
+		previous := make([]models.ProcessStepPrevious, 0, len(branches))
+		for _, b := range branches {
+			previous = append(previous, models.ProcessStepPrevious{PreviousStepID: b.NextStepID})
+		}
+		return r.upsertClosingStepTx(tx, source, models.StepParallelEnd, "Конец параллели", previous)
+	case models.StepCondition:
+		var branches []models.ProcessConditionBranch
+		if err := tx.Where("condition_step_id = ?", source.ID).Find(&branches).Error; err != nil {
+			return err
+		}
+		if len(branches) == 0 {
+			return r.deleteClosingStepsBySourceTx(tx, source.ID, models.StepConditionEnd)
+		}
+		previous := make([]models.ProcessStepPrevious, 0, len(branches))
+		for _, b := range branches {
+			previous = append(previous, models.ProcessStepPrevious{PreviousStepID: b.NextStepID})
+		}
+		return r.upsertClosingStepTx(tx, source, models.StepConditionEnd, "Конец условия", previous)
+	default:
+		var closing []models.ProcessStep
+		if err := tx.Select("id", "type").
+			Where("closes_step_id = ? AND (type = ? OR type = ?)", source.ID, models.StepParallelEnd, models.StepConditionEnd).
+			Find(&closing).Error; err != nil {
+			return err
+		}
+		for _, c := range closing {
+			if err := tx.Where("step_id = ? OR previous_step_id = ?", c.ID, c.ID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&models.ProcessStep{}, c.ID).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+func (r *ProcessRepository) deleteClosingStepsBySourceTx(tx *gorm.DB, sourceID uint, closingType models.StepType) error {
+	var closing []models.ProcessStep
+	if err := tx.Select("id").
+		Where("closes_step_id = ? AND type = ?", sourceID, closingType).
+		Find(&closing).Error; err != nil {
+		return err
+	}
+	for _, c := range closing {
+		if err := tx.Where("step_id = ? OR previous_step_id = ?", c.ID, c.ID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&models.ProcessStep{}, c.ID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ProcessRepository) upsertClosingStepTx(
+	tx *gorm.DB,
+	source models.ProcessStep,
+	closingType models.StepType,
+	closingNamePrefix string,
+	previous []models.ProcessStepPrevious,
+) error {
+	var closings []models.ProcessStep
+	if err := tx.Where("closes_step_id = ? AND type = ?", source.ID, closingType).Order("id ASC").Find(&closings).Error; err != nil {
+		return err
+	}
+
+	var closing models.ProcessStep
+	hasClosing := len(closings) > 0
+	if hasClosing {
+		closing = closings[0]
+		for i := 1; i < len(closings); i++ {
+			extraID := closings[i].ID
+			if err := tx.Where("step_id = ? OR previous_step_id = ?", extraID, extraID).Delete(&models.ProcessStepPrevious{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&models.ProcessStep{}, extraID).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	if !hasClosing {
+		var last models.ProcessStep
+		if err := tx.Where("process_version_id = ?", source.ProcessVersionID).Order("step_order DESC, id DESC").First(&last).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		closing = models.ProcessStep{
+			ProcessVersionID: source.ProcessVersionID,
+			StepOrder:        last.StepOrder + 1,
+			Name:             fmt.Sprintf("%s: %s", closingNamePrefix, source.Name),
+			Type:             closingType,
+			Description:      "",
+			ClosesStepID:     &source.ID,
+		}
+		if err := tx.Create(&closing).Error; err != nil {
+			return err
+		}
+	} else {
+		if err := tx.Model(&models.ProcessStep{}).Where("id = ?", closing.ID).Updates(map[string]interface{}{
+			"name": fmt.Sprintf("%s: %s", closingNamePrefix, source.Name),
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	return r.replaceStepPreviousTx(tx, closing.ID, previous)
 }
 
 func (r *ProcessRepository) GetAllFolders() ([]models.ProcessFolder, error) {

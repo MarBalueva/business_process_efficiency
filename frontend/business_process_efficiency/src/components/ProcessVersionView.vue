@@ -7,7 +7,6 @@
 
     <div class="version-info">
       <p><b>Создана:</b> {{ formatDateTime(version.CreatedAt) }}</p>
-      <p><b>Опубликована:</b> {{ version.IsPublished ? 'Да' : 'Нет' }}</p>
     </div>
 
     <div class="steps-header">
@@ -15,18 +14,18 @@
       <div class="steps-header-actions">
         <div class="steps-view-tabs">
           <button
-            :class="['steps-view-btn', { active: stepsViewMode === 'table' }]"
-            @click="stepsViewMode = 'table'"
-            type="button"
-          >
-            Таблица
-          </button>
-          <button
             :class="['steps-view-btn', { active: stepsViewMode === 'graph' }]"
             @click="stepsViewMode = 'graph'"
             type="button"
           >
-            Граф
+            Граф процесса
+          </button>
+          <button
+            :class="['steps-view-btn', { active: stepsViewMode === 'table' }]"
+            @click="stepsViewMode = 'table'"
+            type="button"
+          >
+            Справка
           </button>
         </div>
         <button class="add-step-btn" @click="openCreateStepModal">+ Добавить этап</button>
@@ -34,6 +33,7 @@
     </div>
 
     <div v-if="stepsViewMode === 'table'" class="steps-table">
+      <div class="steps-reference-title">Справочные данные по этапам</div>
       <table class="steps-table-grid">
         <thead>
           <tr>
@@ -50,7 +50,20 @@
         </thead>
         <tbody v-if="sortedSteps.length > 0">
           <template v-for="(step, index) in sortedSteps" :key="step.ID">
-            <tr v-for="(executorRow, execIndex) in getStepExecutorRows(step)" :key="`${step.ID}-${execIndex}`">
+            <tr
+              v-for="(executorRow, execIndex) in getStepExecutorRows(step)"
+              :key="`${step.ID}-${execIndex}`"
+              :draggable="execIndex === 0"
+              :class="{
+                'drag-source-step': execIndex === 0 && isDraggedStep(step.ID),
+                'drag-over-step': execIndex === 0 && isDragOverStep(step.ID)
+              }"
+              @dragstart="execIndex === 0 ? onStepDragStart(step.ID, $event) : null"
+              @dragover="execIndex === 0 ? onStepDragOver(step.ID, $event) : null"
+              @dragleave="execIndex === 0 ? onStepDragLeave(step.ID) : null"
+              @drop="execIndex === 0 ? onStepDrop(step.ID, $event) : null"
+              @dragend="execIndex === 0 ? onStepDragEnd() : null"
+            >
               <td v-if="execIndex === 0" :rowspan="getStepExecutorRows(step).length" class="steps-cell-center">
                 {{ getStepDisplayOrder(step, index) }}
               </td>
@@ -91,10 +104,21 @@
       <div v-if="sortedSteps.length === 0" class="empty steps-empty">Этапов нет</div>
       <div v-else class="steps-graph-layout">
         <div class="graph-canvas-wrap">
+          <div class="graph-toolbar">
+            <button class="icon-btn" type="button" @click="zoomGraph(0.1)">+</button>
+            <button class="icon-btn" type="button" @click="zoomGraph(-0.1)">-</button>
+            <button class="icon-btn" type="button" @click="resetGraphView">Сброс</button>
+          </div>
           <svg
+            ref="graphSvgRef"
             class="steps-graph-svg"
             :viewBox="`0 0 ${graphSvgWidth} ${graphSvgHeight}`"
             preserveAspectRatio="xMinYMin meet"
+            @mousedown="onGraphMouseDown"
+            @mousemove="onGraphMouseMove"
+            @mouseup="onGraphMouseUp"
+            @mouseleave="onGraphMouseUp"
+            @wheel.prevent="onGraphWheel"
           >
             <defs>
               <marker
@@ -110,34 +134,76 @@
               </marker>
             </defs>
 
-            <polyline
-              v-for="edge in graphEdges"
-              :key="edge.id"
-              :points="edge.points"
-              fill="none"
-              stroke="#cbd5e1"
-              stroke-width="2"
-              marker-end="url(#stepArrow)"
-            />
-
-            <g
-              v-for="node in graphNodes"
-              :key="node.id"
-              class="graph-node"
-              :class="{ active: Number(selectedGraphStep?.ID) === Number(node.id) }"
-              @click="selectGraphStep(node.id)"
-            >
-              <rect
-                :x="node.x"
-                :y="node.y"
-                :width="GRAPH_NODE_WIDTH"
-                :height="GRAPH_NODE_HEIGHT"
-                rx="10"
-                ry="10"
+            <g :transform="graphTransform">
+              <polyline
+                v-for="edge in graphEdges"
+                :key="edge.id"
+                :points="edge.points"
+                fill="none"
+                :stroke="edge?.type === 'condition' ? '#f59e0b' : edge?.type === 'parallel' ? '#6366f1' : '#94a3b8'"
+                :stroke-width="edge?.type === 'sequence' ? 1.8 : 2.2"
+                :stroke-dasharray="edge?.type === 'parallel' ? '6 4' : ''"
+                marker-end="url(#stepArrow)"
               />
-              <text :x="node.x + 10" :y="node.y + 20" class="graph-node-order">{{ node.order }}.</text>
-              <text :x="node.x + 28" :y="node.y + 20" class="graph-node-title">{{ shortStepName(node.name) }}</text>
-              <text :x="node.x + 10" :y="node.y + 38" class="graph-node-type">{{ getStepTypeLabel(node.type) }}</text>
+              <text
+                v-for="edge in conditionGraphEdges"
+                :key="`label-${edge.id}`"
+                :x="edge.labelX"
+                :y="edge.labelY"
+                class="graph-edge-label"
+              >
+                {{ edge.label }}
+              </text>
+
+              <g
+                v-for="node in graphNodes"
+                :key="node.id"
+                class="graph-node"
+                :class="{ active: Number(selectedGraphStep?.ID) === Number(node.id) }"
+                @click.stop="selectGraphStep(node.id)"
+                @mousedown.stop="onNodeMouseDown(node.id, $event)"
+              >
+                <circle
+                  v-if="isEventType(node.type)"
+                  :cx="node.x + GRAPH_NODE_WIDTH / 2"
+                  :cy="node.y + GRAPH_NODE_HEIGHT / 2"
+                  :r="Math.max(8, Math.min(GRAPH_NODE_WIDTH, GRAPH_NODE_HEIGHT) / 2)"
+                />
+                <polygon
+                  v-else-if="isDiamondType(node.type)"
+                  :points="getConditionDiamondPoints(node)"
+                />
+                <rect
+                  v-else
+                  :x="node.x"
+                  :y="node.y"
+                  :width="GRAPH_NODE_WIDTH"
+                  :height="GRAPH_NODE_HEIGHT"
+                  rx="6"
+                  ry="6"
+                />
+                <text :x="node.x + 6" :y="node.y + 14" class="graph-node-order">{{ node.order }}.</text>
+                <text :x="node.x + 26" :y="node.y + 14" class="graph-node-title">{{ shortStepName(node.name) }}</text>
+              </g>
+
+              <g
+                v-for="node in addableGraphNodes"
+                :key="`add-${node.id}`"
+                class="graph-node-add"
+                @click.stop="openCreateStepModal(node.id)"
+              >
+                <circle
+                  :cx="node.x + GRAPH_NODE_WIDTH / 2"
+                  :cy="node.y + GRAPH_NODE_HEIGHT + 18"
+                  r="8"
+                />
+                <text
+                  :x="node.x + GRAPH_NODE_WIDTH / 2"
+                  :y="node.y + GRAPH_NODE_HEIGHT + 21"
+                >
+                  +
+                </text>
+              </g>
             </g>
           </svg>
         </div>
@@ -176,6 +242,19 @@
               <select v-model="form.type" @change="onStepTypeChange">
                 <option disabled value="">Выберите тип</option>
                 <option v-for="(label, code) in stepTypes" :key="code" :value="code">{{ label }}</option>
+              </select>
+
+              <label>Предыдущий этап</label>
+              <select v-model.number="form.previousStepId">
+                <option :value="0">Нет (начало)</option>
+                <option
+                  v-for="stepOption in availablePreviousStepForOrder"
+                  :key="`order-prev-${stepOption.ID}`"
+                  :value="stepOption.ID"
+                >
+                  {{ getStepDisplayOrder(stepOption, sortedSteps.findIndex((s) => Number(s.ID) === Number(stepOption.ID))) }}.
+                  {{ getStepTypeLabel(stepOption.Type) }}: {{ stepOption.Name }}
+                </option>
               </select>
 
               <label>Описание</label>
@@ -251,6 +330,100 @@
               <div v-else class="empty">
                 Исполнители доступны только для типов этапа "Операция" и "Подпроцесс".
               </div>
+
+              <template v-if="form.type === 'PARALLEL_GATEWAY'">
+                <label>Ветви параллели</label>
+                <div class="condition-branches">
+                  <div class="condition-branch-header">
+                    <span>Следующий этап</span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  <div class="condition-branch-row" v-for="(branch, idx) in form.parallelBranches" :key="`pbranch-${idx}`">
+                    <select v-model.number="branch.nextStepId">
+                      <option :value="0">Выберите этап</option>
+                      <option
+                        v-for="stepOption in availableParallelNextSteps"
+                        :key="`pnext-${stepOption.ID}`"
+                        :value="stepOption.ID"
+                      >
+                        {{ getStepTypeLabel(stepOption.Type) }}: {{ stepOption.Name }}
+                      </option>
+                    </select>
+                    <span></span>
+                    <button class="icon-btn delete" type="button" @click="removeParallelBranch(idx)">
+                      <Trash :size="14" />
+                    </button>
+                  </div>
+                  <div class="condition-branch-actions">
+                    <button class="add-step-btn" type="button" @click="addParallelBranch">+ Добавить ветвь</button>
+                  </div>
+                </div>
+              </template>
+
+              <template v-if="form.type === 'CONDITION'">
+                <label>Ветви условия</label>
+                <div class="condition-branches">
+                  <div class="condition-branch-header">
+                    <span>Следующий этап</span>
+                    <span>Вероятность (%)</span>
+                    <span></span>
+                  </div>
+                  <div class="condition-branch-row" v-for="(branch, idx) in form.conditionBranches" :key="`branch-${idx}`">
+                    <select v-model.number="branch.nextStepId">
+                      <option :value="0">Выберите этап</option>
+                      <option
+                        v-for="stepOption in availableConditionNextSteps"
+                        :key="`cond-${stepOption.ID}`"
+                        :value="stepOption.ID"
+                      >
+                        {{ getStepTypeLabel(stepOption.Type) }}: {{ stepOption.Name }}
+                      </option>
+                    </select>
+                    <input type="number" min="0" max="100" step="0.01" v-model.number="branch.probabilityPercent" />
+                    <button class="icon-btn delete" type="button" @click="removeConditionBranch(idx)">
+                      <Trash :size="14" />
+                    </button>
+                  </div>
+                  <div class="condition-branch-actions">
+                    <button class="add-step-btn" type="button" @click="addConditionBranch">+ Добавить ветвь</button>
+                    <span class="condition-sum" :class="{ valid: conditionProbabilityIsValid, invalid: !conditionProbabilityIsValid }">
+                      Сумма: {{ conditionProbabilitySumDisplay }}%
+                    </span>
+                  </div>
+                </div>
+              </template>
+
+              <template v-if="form.type === 'PARALLEL_END' || form.type === 'CONDITION_END'">
+                <label>Закрываемый этап</label>
+                <select v-model.number="form.closesStepId">
+                  <option :value="0">Выберите этап</option>
+                  <option
+                    v-for="stepOption in availableClosableGatewaySteps"
+                    :key="`close-${stepOption.ID}`"
+                    :value="stepOption.ID"
+                  >
+                    {{ getStepTypeLabel(stepOption.Type) }}: {{ stepOption.Name }}
+                  </option>
+                </select>
+
+                <label>Предыдущие этапы</label>
+                <div class="parallel-picker">
+                  <label
+                    v-for="stepOption in availablePreviousStepsForClosing"
+                    :key="`prev-${stepOption.ID}`"
+                    class="parallel-option"
+                  >
+                    <input
+                      type="checkbox"
+                      :value="stepOption.ID"
+                      v-model="form.previousStepIds"
+                    />
+                    <span>{{ getStepTypeLabel(stepOption.Type) }}: {{ stepOption.Name }}</span>
+                  </label>
+                  <div v-if="availablePreviousStepsForClosing.length === 0" class="empty">Нет доступных этапов</div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -380,7 +553,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue"
+import { ref, computed, onMounted, watch } from "vue"
 import { Pencil, Trash, X } from "lucide-vue-next"
 import api from "../api/axios"
 
@@ -392,20 +565,35 @@ const showDeleteMeasurementDialog = ref(false)
 const showDeleteStepDialog = ref(false)
 const modalOpen = ref(false)
 const showExecutorPicker = ref(false)
-const stepsViewMode = ref("table")
+const stepsViewMode = ref("graph")
 const editMode = ref(false)
 const editingStepId = ref(null)
 const editedMeasurements = ref([])
 const deletingMeasurementId = ref(null)
 const deletingStepId = ref(null)
 const selectedGraphStepId = ref(null)
+const createAfterStepId = ref(null)
+const draggedStepId = ref(null)
+const dragOverStepId = ref(null)
+const isReorderingSteps = ref(false)
+const graphSvgRef = ref(null)
+const graphScale = ref(1)
+const graphPan = ref({ x: 0, y: 0 })
+const nodeOverrides = ref({})
+const draggingNodeState = ref(null)
+const panningState = ref(null)
 
 const form = ref({
   name: "",
   type: "",
   description: "",
+  previousStepId: 0,
+  closesStepId: 0,
+  previousStepIds: [],
   executorIds: [],
   executorPercents: {},
+  parallelBranches: [],
+  conditionBranches: [],
   plannedTimeMin: 0,
   finalDurationMin: 0,
   useStatistics: false,
@@ -427,18 +615,21 @@ const stepTypes = {
   INTERMEDIATE: "Промежуточное событие",
   SUBPROCESS: "Подпроцесс",
   OPERATION: "Операция",
-  CONDITION: "Условие"
+  CONDITION: "Условие",
+  PARALLEL_GATEWAY: "Параллельный шлюз",
+  PARALLEL_END: "Конец параллели",
+  CONDITION_END: "Конец условия"
 }
 const TIME_TRACKABLE_STEP_TYPES = ["SUBPROCESS", "OPERATION"]
 const isTimeTrackableType = (type) => TIME_TRACKABLE_STEP_TYPES.includes(type)
 const isExecutorAllowedType = (type) => TIME_TRACKABLE_STEP_TYPES.includes(type)
-const GRAPH_NODE_WIDTH = 220
-const GRAPH_NODE_HEIGHT = 60
+const GRAPH_NODE_WIDTH = 74
+const GRAPH_NODE_HEIGHT = 20
 const GRAPH_COLS = 1
-const GRAPH_GAP_X = 90
-const GRAPH_GAP_Y = 80
+const GRAPH_GAP_X = 44
+const GRAPH_GAP_Y = 52
 const GRAPH_PADDING_X = 24
-const GRAPH_PADDING_Y = 24
+const GRAPH_PADDING_Y = 20
 
 const getStepId = (step) => Number(step?.ID)
 const getExecutorId = (executor) => Number(executor?.id ?? executor?.ID)
@@ -468,8 +659,13 @@ const resetForm = () => {
     name: "",
     type: "",
     description: "",
+    previousStepId: 0,
+    closesStepId: 0,
+    previousStepIds: [],
     executorIds: [],
     executorPercents: {},
+    parallelBranches: [],
+    conditionBranches: [],
     plannedTimeMin: 0,
     finalDurationMin: 0,
     useStatistics: false,
@@ -489,6 +685,7 @@ const resetForm = () => {
   showDeleteMeasurementDialog.value = false
   deletingStepId.value = null
   showDeleteStepDialog.value = false
+  createAfterStepId.value = null
 }
 
 const closeStepModal = () => {
@@ -519,10 +716,153 @@ const sortedSteps = computed(() => {
   })
 })
 
-const graphNodes = computed(() => {
+const graphStepById = computed(() => {
+  const map = new Map()
+  for (const step of sortedSteps.value) {
+    map.set(Number(step.ID), step)
+  }
+  return map
+})
+
+const graphOrderIndexByStepId = computed(() => {
+  const map = new Map()
+  sortedSteps.value.forEach((step, idx) => map.set(Number(step.ID), idx))
+  return map
+})
+
+const graphLinks = computed(() => {
+  const edges = []
+  const hasEdge = new Set()
+  const byId = graphStepById.value
+  const orderIndex = graphOrderIndexByStepId.value
+
+  const addEdge = (fromId, toId, type, label = "") => {
+    const from = Number(fromId)
+    const to = Number(toId)
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return
+    if (!byId.has(from) || !byId.has(to)) return
+    const key = `${type}:${from}->${to}`
+    if (hasEdge.has(key)) return
+    hasEdge.add(key)
+    edges.push({ id: key, fromId: from, toId: to, type, label })
+  }
+
+  const incomingCount = new Map()
+  const bumpIncoming = (stepId) => {
+    const id = Number(stepId)
+    if (!Number.isFinite(id)) return
+    incomingCount.set(id, Number(incomingCount.get(id) || 0) + 1)
+  }
+
+  // 1) Explicit previous links have top priority.
+  for (const step of sortedSteps.value) {
+    const stepId = Number(step.ID)
+    const previous = Array.isArray(step.PreviousSteps) ? step.PreviousSteps : []
+    for (const prev of previous) {
+      const prevId = Number(prev.PreviousStepID)
+      addEdge(prevId, stepId, "sequence")
+      bumpIncoming(stepId)
+    }
+  }
+
+  // 2) Typed branch links (condition / parallel).
+  for (const step of sortedSteps.value) {
+    if (step.Type === "CONDITION") {
+      const branches = Array.isArray(step.ConditionBranches) ? step.ConditionBranches : []
+      for (const branch of branches) {
+        const nextId = Number(branch.NextStepID)
+        const probability = Number(branch.ProbabilityPercent)
+        const label = Number.isFinite(probability) ? `${probability.toFixed(0)}%` : ""
+        addEdge(step.ID, nextId, "condition", label)
+        bumpIncoming(nextId)
+      }
+    }
+
+    const parallels = Array.isArray(step.ParallelBranches) ? step.ParallelBranches : []
+    const fromIndex = orderIndex.get(Number(step.ID))
+    for (const parallel of parallels) {
+      const toId = Number(parallel.NextStepID)
+      const toIndex = orderIndex.get(toId)
+      if (!Number.isFinite(fromIndex) || !Number.isFinite(toIndex)) continue
+      if (toIndex <= fromIndex) continue
+      addEdge(step.ID, toId, "parallel")
+      bumpIncoming(toId)
+    }
+
+    if (step.Type === "PARALLEL_END" || step.Type === "CONDITION_END") {
+      const previous = Array.isArray(step.PreviousSteps) ? step.PreviousSteps : []
+      for (const prev of previous) {
+        const prevId = Number(prev.PreviousStepID)
+        addEdge(prevId, step.ID, "sequence")
+        bumpIncoming(step.ID)
+      }
+    }
+  }
+
+  // 3) Fallback linear links only for steps without explicit incoming links.
+  for (let i = 0; i < sortedSteps.value.length - 1; i++) {
+    const from = sortedSteps.value[i]
+    const to = sortedSteps.value[i + 1]
+    const toId = Number(to.ID)
+    if (Number(incomingCount.get(toId) || 0) > 0) continue
+
+    const branches = Array.isArray(from.ConditionBranches) ? from.ConditionBranches : []
+    const parallelBranches = Array.isArray(from.ParallelBranches) ? from.ParallelBranches : []
+    if (from.Type === "CONDITION" && branches.length > 0) continue
+    if (from.Type === "PARALLEL_GATEWAY" && parallelBranches.length > 0) continue
+
+    addEdge(from.ID, to.ID, "sequence")
+    bumpIncoming(toId)
+  }
+
+  return edges
+})
+
+const graphColumnByStepId = computed(() => {
+  const columns = new Map()
+  const orderIndex = graphOrderIndexByStepId.value
+
+  for (const step of sortedSteps.value) {
+    const stepId = Number(step.ID)
+    if (!Number.isFinite(stepId)) continue
+    if (!columns.has(stepId)) columns.set(stepId, 0)
+
+    const outgoing = graphLinks.value.filter((e) => e.fromId === stepId)
+    if (outgoing.length <= 0) continue
+
+    const baseCol = Number(columns.get(stepId) || 0)
+    if (outgoing.length === 1) {
+      const toId = outgoing[0].toId
+      if (!columns.has(toId)) columns.set(toId, baseCol)
+      continue
+    }
+
+    const sortedOutgoing = [...outgoing].sort((a, b) => {
+      const ai = Number(orderIndex.get(a.toId) ?? 0)
+      const bi = Number(orderIndex.get(b.toId) ?? 0)
+      return ai - bi
+    })
+
+    const startShift = -((sortedOutgoing.length - 1) / 2)
+    sortedOutgoing.forEach((edge, idx) => {
+      const toId = edge.toId
+      if (columns.has(toId)) return
+      columns.set(toId, baseCol + startShift + idx)
+    })
+  }
+
+  return columns
+})
+
+const graphAutoNodes = computed(() => {
+  const columns = graphColumnByStepId.value
+  const rawCols = sortedSteps.value.map((step) => Number(columns.get(Number(step.ID)) || 0))
+  const minCol = rawCols.length > 0 ? Math.min(...rawCols) : 0
+
   return sortedSteps.value.map((step, index) => {
     const row = Math.floor(index / GRAPH_COLS)
-    const col = index % GRAPH_COLS
+    const colRaw = Number(columns.get(Number(step.ID)) || 0)
+    const col = colRaw - minCol
     return {
       id: Number(step.ID),
       name: step.Name || "Без названия",
@@ -534,32 +874,81 @@ const graphNodes = computed(() => {
   })
 })
 
-const graphEdges = computed(() => {
-  const nodes = graphNodes.value
-  if (nodes.length < 2) return []
-  return nodes.slice(0, -1).map((fromNode, index) => {
-    const toNode = nodes[index + 1]
-    const fromX = fromNode.x + GRAPH_NODE_WIDTH / 2
-    const fromY = fromNode.y + GRAPH_NODE_HEIGHT
-    const toX = toNode.x + GRAPH_NODE_WIDTH / 2
-    const toY = toNode.y
-    const midY = Math.round((fromY + toY) / 2)
+watch(
+  graphAutoNodes,
+  (nodes) => {
+    const next = {}
+    for (const node of nodes) {
+      const id = Number(node.id)
+      const existing = nodeOverrides.value[id]
+      next[id] = existing && Number.isFinite(existing.x) && Number.isFinite(existing.y)
+        ? existing
+        : { x: node.x, y: node.y }
+    }
+    nodeOverrides.value = next
+  },
+  { immediate: true }
+)
+
+const graphNodes = computed(() =>
+  graphAutoNodes.value.map((node) => {
+    const override = nodeOverrides.value[Number(node.id)]
+    if (!override) return node
     return {
-      id: `${fromNode.id}-${toNode.id}`,
-      points: `${fromX},${fromY} ${fromX},${midY} ${toX},${midY} ${toX},${toY}`
+      ...node,
+      x: Number.isFinite(override.x) ? override.x : node.x,
+      y: Number.isFinite(override.y) ? override.y : node.y
     }
   })
+)
+
+const addableGraphNodes = computed(() =>
+  graphNodes.value.filter((node) => !isTerminalType(node?.type))
+)
+
+const graphEdges = computed(() => {
+  const nodeById = new Map(graphNodes.value.map((n) => [Number(n.id), n]))
+  return graphLinks.value
+    .map((link) => {
+      const fromNode = nodeById.get(Number(link.fromId))
+      const toNode = nodeById.get(Number(link.toId))
+      if (!fromNode || !toNode) return null
+
+      const fromX = fromNode.x + GRAPH_NODE_WIDTH / 2
+      const fromY = fromNode.y + GRAPH_NODE_HEIGHT
+      const toX = toNode.x + GRAPH_NODE_WIDTH / 2
+      const toY = toNode.y
+      const midY = Math.round((fromY + toY) / 2)
+      return {
+        id: link.id,
+        type: link.type,
+        label: link.label || "",
+        points: `${fromX},${fromY} ${fromX},${midY} ${toX},${midY} ${toX},${toY}`,
+        labelX: toX + 6,
+        labelY: midY - 4
+      }
+    })
+    .filter(Boolean)
 })
 
+const conditionGraphEdges = computed(() =>
+  graphEdges.value.filter((edge) => edge && edge.type === "condition" && edge.label)
+)
+
 const graphSvgWidth = computed(() => {
-  const cols = Math.min(GRAPH_COLS, Math.max(1, sortedSteps.value.length))
-  return GRAPH_PADDING_X * 2 + cols * GRAPH_NODE_WIDTH + Math.max(0, cols - 1) * GRAPH_GAP_X
+  const nodes = graphNodes.value
+  if (nodes.length === 0) return GRAPH_PADDING_X * 2 + GRAPH_NODE_WIDTH
+  const minX = Math.min(...nodes.map((n) => n.x))
+  const maxX = Math.max(...nodes.map((n) => n.x))
+  return maxX - minX + GRAPH_NODE_WIDTH + GRAPH_PADDING_X * 2
 })
 
 const graphSvgHeight = computed(() => {
   const rows = Math.max(1, Math.ceil(sortedSteps.value.length / GRAPH_COLS))
   return GRAPH_PADDING_Y * 2 + rows * GRAPH_NODE_HEIGHT + Math.max(0, rows - 1) * GRAPH_GAP_Y
 })
+
+const graphTransform = computed(() => `translate(${graphPan.value.x} ${graphPan.value.y}) scale(${graphScale.value})`)
 
 const selectedGraphStep = computed(() => {
   const selected = sortedSteps.value.find((s) => Number(s.ID) === Number(selectedGraphStepId.value))
@@ -587,8 +976,105 @@ const selectGraphStep = (stepId) => {
 
 const shortStepName = (name) => {
   const str = String(name || "").trim()
-  if (str.length <= 20) return str
-  return `${str.slice(0, 17)}...`
+  if (str.length <= 8) return str
+  return `${str.slice(0, 7)}…`
+}
+
+const isEventType = (type) => type === "START" || type === "END"
+const isTerminalType = (type) => type === "END"
+const isDiamondType = (type) =>
+  type === "CONDITION" || type === "PARALLEL_GATEWAY" || type === "CONDITION_END" || type === "PARALLEL_END"
+
+const getConditionDiamondPoints = (node) => {
+  const cx = node.x + GRAPH_NODE_WIDTH / 2
+  const cy = node.y + GRAPH_NODE_HEIGHT / 2
+  const rx = GRAPH_NODE_WIDTH / 2
+  const ry = GRAPH_NODE_HEIGHT / 2
+  return `${cx},${cy - ry} ${cx + rx},${cy} ${cx},${cy + ry} ${cx - rx},${cy}`
+}
+
+const clampGraphScale = (value) => Math.min(2.4, Math.max(0.5, value))
+
+const zoomGraph = (delta) => {
+  graphScale.value = clampGraphScale(graphScale.value + delta)
+}
+
+const resetGraphView = () => {
+  graphScale.value = 1
+  graphPan.value = { x: 0, y: 0 }
+}
+
+const toGraphCoords = (event) => {
+  const svg = graphSvgRef.value
+  if (!svg || !svg.getScreenCTM) return { x: 0, y: 0 }
+
+  const point = svg.createSVGPoint()
+  point.x = event.clientX
+  point.y = event.clientY
+  const ctm = svg.getScreenCTM()
+  if (!ctm) return { x: 0, y: 0 }
+
+  const svgPoint = point.matrixTransform(ctm.inverse())
+  return {
+    x: (svgPoint.x - graphPan.value.x) / graphScale.value,
+    y: (svgPoint.y - graphPan.value.y) / graphScale.value
+  }
+}
+
+const onNodeMouseDown = (nodeId, event) => {
+  if (event.button !== 0) return
+  const node = graphNodes.value.find((n) => Number(n.id) === Number(nodeId))
+  if (!node) return
+  const point = toGraphCoords(event)
+  draggingNodeState.value = {
+    id: Number(nodeId),
+    offsetX: point.x - node.x,
+    offsetY: point.y - node.y
+  }
+}
+
+const onGraphMouseDown = (event) => {
+  if (event.button !== 0) return
+  if (draggingNodeState.value) return
+  panningState.value = {
+    startX: event.clientX,
+    startY: event.clientY,
+    panX: graphPan.value.x,
+    panY: graphPan.value.y
+  }
+}
+
+const onGraphMouseMove = (event) => {
+  if (draggingNodeState.value) {
+    const point = toGraphCoords(event)
+    const nodeId = Number(draggingNodeState.value.id)
+    const nextX = point.x - draggingNodeState.value.offsetX
+    const nextY = point.y - draggingNodeState.value.offsetY
+    nodeOverrides.value = {
+      ...nodeOverrides.value,
+      [nodeId]: { x: nextX, y: nextY }
+    }
+    return
+  }
+
+  if (panningState.value) {
+    const dx = event.clientX - panningState.value.startX
+    const dy = event.clientY - panningState.value.startY
+    graphPan.value = {
+      x: panningState.value.panX + dx,
+      y: panningState.value.panY + dy
+    }
+  }
+}
+
+const onGraphMouseUp = () => {
+  draggingNodeState.value = null
+  panningState.value = null
+}
+
+const onGraphWheel = (event) => {
+  const delta = event.deltaY < 0 ? 0.1 : -0.1
+  zoomGraph(delta)
 }
 
 const executorsById = computed(() => {
@@ -640,8 +1126,10 @@ const getMeasurementPausedSeconds = (measurement) => {
   return seconds + extra
 }
 
-const openCreateStepModal = () => {
+const openCreateStepModal = (afterStepId = null) => {
   resetForm()
+  createAfterStepId.value = Number.isFinite(Number(afterStepId)) ? Number(afterStepId) : null
+  form.value.previousStepId = createAfterStepId.value || 0
   modalOpen.value = true
 }
 
@@ -656,12 +1144,26 @@ const openEditStepModal = (step) => {
     name: step.Name || "",
     type: step.Type || "",
     description: step.Description || "",
+    previousStepId: 0,
+    closesStepId: Number(step.ClosesStepID) || 0,
+    previousStepIds: (step.PreviousSteps || []).map((p) => Number(p.PreviousStepID)).filter(Number.isFinite),
     executorIds: isExecutorAllowedType(step.Type)
       ? (step.StepExecutors || []).map((se) => Number(se.EmployeeID)).filter(Number.isFinite)
       : [],
     executorPercents: isExecutorAllowedType(step.Type)
       ? Object.fromEntries((step.StepExecutors || []).map((se) => [Number(se.EmployeeID), Number(se.WorkloadPercent || 0)]))
       : {},
+    parallelBranches: step.Type === "PARALLEL_GATEWAY"
+      ? (step.ParallelBranches || []).map((b) => ({
+          nextStepId: Number(b.NextStepID) || 0
+        }))
+      : [],
+    conditionBranches: step.Type === "CONDITION"
+      ? (step.ConditionBranches || []).map((b) => ({
+          nextStepId: Number(b.NextStepID) || 0,
+          probabilityPercent: Number(b.ProbabilityPercent) || 0
+        }))
+      : [],
     plannedTimeMin: timeTrackable ? (metrics.PlannedTimeMin ?? 0) : 0,
     finalDurationMin: Number(step.FinalDurationMin || 0),
     useStatistics: timeTrackable ? !!step.Metrics : false,
@@ -674,6 +1176,14 @@ const openEditStepModal = (step) => {
   }
   editedMeasurements.value = [...(step.Measurements || [])].sort((a, b) => Number(a.ID) - Number(b.ID))
 
+  const explicitPrevious = (step.PreviousSteps || []).map((p) => Number(p.PreviousStepID)).find(Number.isFinite)
+  if (Number.isFinite(explicitPrevious) && explicitPrevious > 0) {
+    form.value.previousStepId = explicitPrevious
+  } else {
+    const currentIndex = sortedSteps.value.findIndex((s) => Number(s.ID) === Number(step.ID))
+    form.value.previousStepId = currentIndex > 0 ? Number(sortedSteps.value[currentIndex - 1].ID) || 0 : 0
+  }
+
   executorSearch.value = ""
   showExecutorPicker.value = false
   modalOpen.value = true
@@ -682,10 +1192,94 @@ const openEditStepModal = (step) => {
 
 const getStepTypeLabel = (type) => stepTypes[type] || type || "—"
 
-const getStepDisplayOrder = (step, fallbackIndex) => {
+function getStepDisplayOrder(step, fallbackIndex) {
   const order = Number(step?.StepOrder)
   if (Number.isFinite(order) && order > 0) return order
   return fallbackIndex + 1
+}
+
+const isDraggedStep = (stepId) => Number(draggedStepId.value) === Number(stepId)
+const isDragOverStep = (stepId) => Number(dragOverStepId.value) === Number(stepId)
+
+const onStepDragStart = (stepId, event) => {
+  if (isReorderingSteps.value) {
+    event.preventDefault()
+    return
+  }
+  draggedStepId.value = Number(stepId)
+  dragOverStepId.value = null
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", String(stepId))
+  }
+}
+
+const onStepDragOver = (stepId, event) => {
+  if (isReorderingSteps.value) return
+  if (!draggedStepId.value || Number(draggedStepId.value) === Number(stepId)) return
+  event.preventDefault()
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = "move"
+  }
+  dragOverStepId.value = Number(stepId)
+}
+
+const onStepDragLeave = (stepId) => {
+  if (Number(dragOverStepId.value) === Number(stepId)) {
+    dragOverStepId.value = null
+  }
+}
+
+const onStepDragEnd = () => {
+  draggedStepId.value = null
+  dragOverStepId.value = null
+}
+
+const onStepDrop = async (targetStepId, event) => {
+  event.preventDefault()
+
+  const sourceStepId = Number(draggedStepId.value)
+  const toStepId = Number(targetStepId)
+  onStepDragEnd()
+
+  if (!Number.isFinite(sourceStepId) || !Number.isFinite(toStepId) || sourceStepId === toStepId) {
+    return
+  }
+
+  const orderedIds = sortedSteps.value.map((s) => Number(s.ID)).filter(Number.isFinite)
+  const fromIndex = orderedIds.findIndex((id) => id === sourceStepId)
+  const toIndex = orderedIds.findIndex((id) => id === toStepId)
+
+  if (fromIndex < 0 || toIndex < 0) return
+
+  const nextOrder = [...orderedIds]
+  const [moved] = nextOrder.splice(fromIndex, 1)
+  nextOrder.splice(toIndex, 0, moved)
+
+  const unchanged = nextOrder.every((id, idx) => id === orderedIds[idx])
+  if (unchanged) return
+
+  const token = localStorage.getItem("jwt")
+  if (!token) return
+
+  try {
+    isReorderingSteps.value = true
+    await api.post(
+      "/processes/steps/reorder",
+      {
+        processVersionId: props.version.ID,
+        orderedStepIds: nextOrder
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    showToast("Порядок этапов обновлен")
+    emit("refresh")
+  } catch (err) {
+    console.error(err)
+    showToast("Ошибка изменения порядка этапов")
+  } finally {
+    isReorderingSteps.value = false
+  }
 }
 
 const getStepExecutorRows = (step) => {
@@ -764,7 +1358,74 @@ const onStepTypeChange = () => {
     form.value.executorPercents = {}
     showExecutorPicker.value = false
   }
+  if (form.value.type !== "PARALLEL_GATEWAY") {
+    form.value.parallelBranches = []
+  }
+  if (form.value.type !== "CONDITION") {
+    form.value.conditionBranches = []
+  }
+  if (form.value.type !== "PARALLEL_END" && form.value.type !== "CONDITION_END") {
+    form.value.closesStepId = 0
+    form.value.previousStepIds = []
+  }
 }
+
+const addParallelBranch = () => {
+  if (!Array.isArray(form.value.parallelBranches)) form.value.parallelBranches = []
+  form.value.parallelBranches.push({ nextStepId: 0 })
+}
+
+const removeParallelBranch = (idx) => {
+  form.value.parallelBranches.splice(idx, 1)
+}
+
+const addConditionBranch = () => {
+  if (!Array.isArray(form.value.conditionBranches)) form.value.conditionBranches = []
+  form.value.conditionBranches.push({ nextStepId: 0, probabilityPercent: 0 })
+}
+
+const removeConditionBranch = (idx) => {
+  form.value.conditionBranches.splice(idx, 1)
+}
+
+const availableParallelNextSteps = computed(() => {
+  return sortedSteps.value.filter((s) =>
+    Number(s.ID) !== Number(editingStepId.value || 0)
+  )
+})
+
+const availableConditionNextSteps = computed(() => {
+  return sortedSteps.value.filter((s) => Number(s.ID) !== Number(editingStepId.value || 0))
+})
+
+const availablePreviousStepForOrder = computed(() =>
+  sortedSteps.value.filter(
+    (s) => Number(s.ID) !== Number(editingStepId.value || 0) && !isTerminalType(s.Type)
+  )
+)
+
+const availableClosableGatewaySteps = computed(() => {
+  if (form.value.type === "PARALLEL_END") {
+    return sortedSteps.value.filter((s) => s.Type === "PARALLEL_GATEWAY")
+  }
+  if (form.value.type === "CONDITION_END") {
+    return sortedSteps.value.filter((s) => s.Type === "CONDITION")
+  }
+  return []
+})
+
+const availablePreviousStepsForClosing = computed(() =>
+  sortedSteps.value.filter((s) => Number(s.ID) !== Number(editingStepId.value || 0))
+)
+
+const conditionProbabilitySum = computed(() => {
+  return (form.value.conditionBranches || [])
+    .map((b) => Number(b.probabilityPercent))
+    .reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0)
+})
+
+const conditionProbabilitySumDisplay = computed(() => conditionProbabilitySum.value.toFixed(2))
+const conditionProbabilityIsValid = computed(() => Math.abs(conditionProbabilitySum.value - 100) <= 0.0001)
 
 const fetchExecutors = async () => {
   const token = localStorage.getItem("jwt")
@@ -856,6 +1517,45 @@ const finalDurationDisplay = computed(() => {
   return finalDurationMin.value.toFixed(2)
 })
 
+const fetchCurrentVersionStepIds = async (token) => {
+  const res = await api.get(`/processes/${props.processId}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  const versions = Array.isArray(res?.data?.Versions) ? res.data.Versions : []
+  const version = versions.find((v) => Number(v.ID) === Number(props.version.ID))
+  const steps = Array.isArray(version?.Steps) ? [...version.Steps] : []
+  steps.sort((a, b) => {
+    const ao = Number(a?.StepOrder)
+    const bo = Number(b?.StepOrder)
+    if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo
+    return Number(a?.ID || 0) - Number(b?.ID || 0)
+  })
+  return steps.map((s) => Number(s.ID)).filter(Number.isFinite)
+}
+
+const applyStepOrderByPrevious = async (stepId, previousStepId, token) => {
+  const currentIds = await fetchCurrentVersionStepIds(token)
+  if (!currentIds.includes(Number(stepId))) return
+
+  const nextOrder = currentIds.filter((id) => id !== Number(stepId))
+  const prevId = Number(previousStepId) || 0
+  if (prevId > 0 && nextOrder.includes(prevId)) {
+    const idx = nextOrder.findIndex((id) => id === prevId)
+    nextOrder.splice(idx + 1, 0, Number(stepId))
+  } else {
+    nextOrder.unshift(Number(stepId))
+  }
+
+  await api.post(
+    "/processes/steps/reorder",
+    {
+      processVersionId: props.version.ID,
+      orderedStepIds: nextOrder
+    },
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+}
+
 const saveStep = async () => {
   if (!form.value.name || !form.value.type) {
     alert("Заполните обязательные поля")
@@ -864,12 +1564,25 @@ const saveStep = async () => {
 
   const canUseTimeSettings = isTimeTrackableType(form.value.type)
   const canUseExecutors = isExecutorAllowedType(form.value.type)
+  const isCondition = form.value.type === "CONDITION"
+  const isParallelGateway = form.value.type === "PARALLEL_GATEWAY"
+  const isClosingStep = form.value.type === "PARALLEL_END" || form.value.type === "CONDITION_END"
   if (!canUseTimeSettings) {
     form.value.useStatistics = false
   }
   if (!canUseExecutors) {
     form.value.executorIds = []
     form.value.executorPercents = {}
+  }
+  if (!isParallelGateway) {
+    form.value.parallelBranches = []
+  }
+  if (!isCondition) {
+    form.value.conditionBranches = []
+  }
+  if (!isClosingStep) {
+    form.value.closesStepId = 0
+    form.value.previousStepIds = []
   }
 
   if (canUseTimeSettings && form.value.useStatistics) {
@@ -907,6 +1620,71 @@ const saveStep = async () => {
   const executorIds = canUseExecutors
     ? form.value.executorIds.map(Number).filter(Number.isFinite)
     : []
+  const parallelBranches = isParallelGateway
+    ? (form.value.parallelBranches || []).map((b) => ({ nextStepId: Number(b.nextStepId) || 0 }))
+    : []
+  const conditionBranches = isCondition
+    ? (form.value.conditionBranches || []).map((b) => ({
+        nextStepId: Number(b.nextStepId) || 0,
+        probabilityPercent: Number(b.probabilityPercent) || 0
+      }))
+    : []
+  const closesStepId = isClosingStep ? Number(form.value.closesStepId) || 0 : 0
+  const previousStepIds = isClosingStep
+    ? (form.value.previousStepIds || []).map(Number).filter((id) => Number.isFinite(id) && id > 0)
+    : []
+  const regularPreviousStepIds = !isClosingStep && Number(form.value.previousStepId) > 0
+    ? [Number(form.value.previousStepId)]
+    : []
+
+  if (isParallelGateway) {
+    if (parallelBranches.length > 0) {
+      const hasEmptyNext = parallelBranches.some((b) => !Number.isFinite(b.nextStepId) || b.nextStepId <= 0)
+      if (hasEmptyNext) {
+        showToast("Выберите следующий этап для каждой ветви параллели")
+        return
+      }
+      const uniqueNext = new Set(parallelBranches.map((b) => b.nextStepId))
+      if (uniqueNext.size !== parallelBranches.length) {
+        showToast("Этапы в ветвях параллели не должны повторяться")
+        return
+      }
+    }
+  }
+
+  if (isCondition) {
+    if (conditionBranches.length > 0) {
+      const hasEmptyNext = conditionBranches.some((b) => !Number.isFinite(b.nextStepId) || b.nextStepId <= 0)
+      if (hasEmptyNext) {
+        showToast("Выберите следующий этап для каждой ветви условия")
+        return
+      }
+      const uniqueNext = new Set(conditionBranches.map((b) => b.nextStepId))
+      if (uniqueNext.size !== conditionBranches.length) {
+        showToast("Этапы в ветвях условия не должны повторяться")
+        return
+      }
+      const invalidProb = conditionBranches.some((b) => !Number.isFinite(b.probabilityPercent) || b.probabilityPercent < 0 || b.probabilityPercent > 100)
+      if (invalidProb) {
+        showToast("Вероятность ветви условия должна быть в диапазоне 0..100")
+        return
+      }
+      if (!conditionProbabilityIsValid.value) {
+        showToast("Сумма вероятностей ветвей условия должна быть ровно 100%")
+        return
+      }
+    }
+  }
+  if (isClosingStep) {
+    if (!Number.isFinite(closesStepId) || closesStepId <= 0) {
+      showToast("Укажите, какой шлюз закрывает этот этап")
+      return
+    }
+    if (previousStepIds.length === 0) {
+      showToast("Укажите предыдущие этапы для закрывающего этапа")
+      return
+    }
+  }
   if (editMode.value && executorIds.length > 0) {
     const invalid = executorIds.find((id) => {
       const p = Number(form.value.executorPercents?.[id])
@@ -927,6 +1705,7 @@ const saveStep = async () => {
     const token = localStorage.getItem("jwt")
 
     if (editMode.value && editingStepId.value) {
+      const updatedStepId = Number(editingStepId.value)
       const executorLoads = executorIds.map((id) => ({
         employeeId: id,
         workloadPercent: Number(form.value.executorPercents?.[id] ?? 0)
@@ -938,12 +1717,19 @@ const saveStep = async () => {
           Name: form.value.name,
           Type: form.value.type,
           Description: form.value.description,
+          ClosesStepId: isClosingStep ? closesStepId : null,
+          PreviousStepIds: isClosingStep ? previousStepIds : regularPreviousStepIds,
           ExecutorLoads: canUseExecutors
             ? executorLoads.map((x) => ({
                 employeeId: x.employeeId,
                 workloadPercent: x.workloadPercent
               }))
             : [],
+          ParallelBranches: parallelBranches.map((b) => ({ nextStepId: b.nextStepId })),
+          ConditionBranches: conditionBranches.map((b) => ({
+            nextStepId: b.nextStepId,
+            probabilityPercent: b.probabilityPercent
+          })),
           Metrics: canUseTimeSettings
             ? {
                 PlannedTimeMin: Number(form.value.plannedTimeMin) || 0,
@@ -963,19 +1749,33 @@ const saveStep = async () => {
         },
         { headers: { Authorization: `Bearer ${token}` } }
       )
+      await applyStepOrderByPrevious(updatedStepId, form.value.previousStepId, token)
       showToast("Этап обновлен")
     } else {
-      await api.post(
+      const createRes = await api.post(
         "/processes/steps",
         {
           processVersionId: props.version.ID,
           name: form.value.name,
           type: form.value.type,
           description: form.value.description,
-          executorIds: canUseExecutors ? executorIds : []
+          closesStepId: isClosingStep ? closesStepId : null,
+          previousStepIds: isClosingStep ? previousStepIds : regularPreviousStepIds,
+          executorIds: canUseExecutors ? executorIds : [],
+          parallelBranches: parallelBranches.map((b) => ({ nextStepId: b.nextStepId })),
+          conditionBranches: conditionBranches.map((b) => ({
+            nextStepId: b.nextStepId,
+            probabilityPercent: b.probabilityPercent
+          }))
         },
         { headers: { Authorization: `Bearer ${token}` } }
       )
+
+      const createdStepId = Number(createRes?.data?.ID)
+      if (Number.isFinite(createdStepId) && createdStepId > 0) {
+        await applyStepOrderByPrevious(createdStepId, form.value.previousStepId, token)
+      }
+
       showToast("Этап добавлен")
       closeStepModal()
     }
@@ -1252,6 +2052,69 @@ const formatDateTime = (iso) => {
   margin-bottom: 8px;
 }
 
+.parallel-picker {
+  border: 1px solid var(--color-muted-bg);
+  border-radius: 8px;
+  background: #fafafa;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.parallel-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.condition-branches {
+  border: 1px solid var(--color-muted-bg);
+  border-radius: 8px;
+  background: #fafafa;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.condition-branch-header,
+.condition-branch-row {
+  display: grid;
+  grid-template-columns: 1fr 130px 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.condition-branch-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.condition-branch-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.condition-sum {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.condition-sum.valid {
+  color: #166534;
+}
+
+.condition-sum.invalid {
+  color: #b91c1c;
+}
+
 .measure-block {
   margin-top: 8px;
   border-top: 1px solid #ececec;
@@ -1441,6 +2304,15 @@ const formatDateTime = (iso) => {
   overflow: auto;
 }
 
+.steps-reference-title {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4b5563;
+  border-bottom: 1px solid #eef0f3;
+  background: #f9fafb;
+}
+
 .steps-graph-wrap {
   margin-top: 10px;
   border: 1px solid var(--color-muted-bg);
@@ -1461,6 +2333,21 @@ const formatDateTime = (iso) => {
   background: white;
   overflow: auto;
   min-height: 420px;
+  position: relative;
+}
+
+.graph-toolbar {
+  position: sticky;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  display: inline-flex;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 4px;
+  margin: 8px;
 }
 
 .steps-graph-svg {
@@ -1471,41 +2358,74 @@ const formatDateTime = (iso) => {
 }
 
 .graph-node {
-  cursor: pointer;
+  cursor: move;
 }
 
-.graph-node rect {
+.graph-node rect,
+.graph-node circle,
+.graph-node polygon {
   fill: #eef2ff;
   stroke: #c7d2fe;
   stroke-width: 1.5;
   transition: fill 0.15s, stroke-color 0.15s;
 }
 
-.graph-node.active rect {
+.graph-node.active rect,
+.graph-node.active circle,
+.graph-node.active polygon {
   fill: #e0e7ff;
   stroke: #6366f1;
 }
 
-.graph-node:hover rect {
+.graph-node:hover rect,
+.graph-node:hover circle,
+.graph-node:hover polygon {
   fill: #e5edff;
   stroke: #818cf8;
 }
 
+.graph-node-add {
+  cursor: pointer;
+}
+
+.graph-node-add circle {
+  fill: #ffffff;
+  stroke: #6366f1;
+  stroke-width: 1.4;
+}
+
+.graph-node-add text {
+  fill: #4338ca;
+  font-size: 12px;
+  text-anchor: middle;
+  font-weight: 700;
+}
+
+.graph-node-add:hover circle {
+  fill: #eef2ff;
+}
+
 .graph-node-order {
   fill: #312e81;
-  font-size: 13px;
+  font-size: 9px;
   font-weight: 600;
 }
 
 .graph-node-title {
   fill: #111827;
-  font-size: 13px;
+  font-size: 9px;
   font-weight: 600;
 }
 
 .graph-node-type {
   fill: #475569;
   font-size: 12px;
+}
+
+.graph-edge-label {
+  fill: #b45309;
+  font-size: 9px;
+  font-weight: 600;
 }
 
 .graph-info-panel {
@@ -1562,6 +2482,22 @@ const formatDateTime = (iso) => {
 
 .steps-table-grid tbody tr:last-child td {
   border-bottom: none;
+}
+
+.steps-table-grid tbody tr[draggable="true"] {
+  cursor: grab;
+}
+
+.steps-table-grid tbody tr[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.drag-source-step td {
+  opacity: 0.65;
+}
+
+.drag-over-step td {
+  background: #eef2ff;
 }
 
 .steps-cell-center {
