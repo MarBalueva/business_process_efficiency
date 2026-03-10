@@ -95,7 +95,7 @@
             <label>Дата приема</label>
             <input v-model="form.hire_date" type="date" />
 
-            <label>Зарплата</label>
+            <label>Ставка в час</label>
             <input v-model.number="form.salary" type="number" step="0.01" />
 
             <label class="checkbox-label">
@@ -270,7 +270,7 @@ onMounted(fetchEmployees)
   display:flex;
   align-items:center;
   gap:6px;
-  background:#f3f4f6;
+  background:var(--color-soft-bg);
   padding:6px 10px;
   border-radius:6px;
 }
@@ -285,7 +285,7 @@ onMounted(fetchEmployees)
 
 .add-btn{
   padding:6px 14px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   border:none;
   border-radius:6px;
@@ -294,7 +294,7 @@ onMounted(fetchEmployees)
 }
 
 .add-btn:hover{
-  background:#3730a3;
+  background:var(--color-primary-hover);
 }
 
 .employees-table{
@@ -321,7 +321,7 @@ onMounted(fetchEmployees)
 .employee-name{
   flex-basis: 350px;
   text-decoration:none;
-  color:#4f46e5;
+  color:var(--color-primary);
   font-weight:500;
 }
 
@@ -435,7 +435,7 @@ onMounted(fetchEmployees)
 }
 
 .save-btn{
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   border:none;
   padding:8px 14px;
@@ -444,7 +444,7 @@ onMounted(fetchEmployees)
 }
 
 .cancel-btn{
-  background:#e5e7eb;
+  background:var(--color-muted-bg);
   border:none;
   padding:8px 14px;
   border-radius:6px;
@@ -455,7 +455,7 @@ onMounted(fetchEmployees)
   position:fixed;
   bottom:30px;
   right:30px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   padding:12px 18px;
   border-radius:8px;

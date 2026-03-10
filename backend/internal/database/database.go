@@ -47,6 +47,7 @@ func Migrate() {
 		&models.ProcessFolder{},
 		&models.Process{},
 		&models.ProcessStep{},
+		&models.ProcessStepExecutor{},
 		&models.StepMetrics{},
 		&models.StepTimeStatistics{},
 		&models.StepMeasurement{},

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -8,6 +9,7 @@ import (
 	"business_process_efficiency/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type StepController struct {
@@ -18,6 +20,29 @@ func NewStepController(service *service.ProcessService) *StepController {
 	return &StepController{service: service}
 }
 
+type ExecutorLoadRequest struct {
+	EmployeeID      uint    `json:"employeeId" binding:"required"`
+	WorkloadPercent float64 `json:"workloadPercent"`
+}
+
+type CreateStepRequest struct {
+	ProcessVersionID uint                  `json:"processVersionId" binding:"required"`
+	Name             string                `json:"name" binding:"required"`
+	Type             string                `json:"type" binding:"required,oneof=START END INTERMEDIATE SUBPROCESS OPERATION CONDITION"`
+	Description      string                `json:"description,omitempty"`
+	ExecutorIDs      []uint                `json:"executorIds,omitempty"`
+	ExecutorLoads    []ExecutorLoadRequest `json:"executorLoads,omitempty"`
+}
+
+type UpdateStepRequest struct {
+	Name          string                `json:"Name" binding:"required"`
+	Type          models.StepType       `json:"Type" binding:"required"`
+	Description   string                `json:"Description,omitempty"`
+	Executors     []models.Employee     `json:"Executors,omitempty"`
+	ExecutorLoads []ExecutorLoadRequest `json:"ExecutorLoads,omitempty"`
+	Metrics       *models.StepMetrics   `json:"Metrics,omitempty"`
+}
+
 // CreateStep godoc
 // @Summary Создание шага процесса
 // @Description Создает новый шаг для процесса
@@ -25,24 +50,53 @@ func NewStepController(service *service.ProcessService) *StepController {
 // @Accept json
 // @Produce json
 // @Security BearerAuth
-// @Param step body models.ProcessStep true "Step data"
+// @Param step body CreateStepRequest true "Step data"
 // @Success 201 {object} models.ProcessStep
 // @Failure 400 {object} map[string]string "error"
 // @Failure 500 {object} map[string]string "error"
-// @Router /steps [post]
+// @Router /processes/steps [post]
 func (h *StepController) CreateStep(c *gin.Context) {
+	var req CreateStepRequest
 
-	var step models.ProcessStep
-
-	if err := c.ShouldBindJSON(&step); err != nil {
-		c.JSON(http.StatusBadRequest, err)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	err := h.service.CreateStep(&step)
+	var lastStep models.ProcessStep
+	if err := h.service.GetLastStep(req.ProcessVersionID, &lastStep); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ошибка при получении последнего шага"})
+		return
+	}
+	stepOrder := lastStep.StepOrder + 1
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, err)
+	step := models.ProcessStep{
+		ProcessVersionID: req.ProcessVersionID,
+		Name:             req.Name,
+		Type:             models.StepType(req.Type),
+		Description:      req.Description,
+		StepOrder:        stepOrder,
+	}
+
+	if len(req.ExecutorLoads) > 0 {
+		step.StepExecutors = make([]models.ProcessStepExecutor, 0, len(req.ExecutorLoads))
+		for _, load := range req.ExecutorLoads {
+			step.StepExecutors = append(step.StepExecutors, models.ProcessStepExecutor{
+				EmployeeID:      load.EmployeeID,
+				WorkloadPercent: load.WorkloadPercent,
+			})
+		}
+	} else if len(req.ExecutorIDs) > 0 {
+		step.Executors = make([]models.Employee, 0, len(req.ExecutorIDs))
+		for _, employeeID := range req.ExecutorIDs {
+			step.Executors = append(step.Executors, models.Employee{
+				ID: employeeID,
+			})
+		}
+	}
+
+	if err := h.service.CreateStep(&step); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ошибка при создании шага"})
 		return
 	}
 
@@ -57,32 +111,53 @@ func (h *StepController) CreateStep(c *gin.Context) {
 // @Produce json
 // @Security BearerAuth
 // @Param id path int true "Step ID"
-// @Param step body models.ProcessStep true "Updated step data"
+// @Param step body UpdateStepRequest true "Updated step data"
 // @Success 200 {object} models.ProcessStep
 // @Failure 400 {object} map[string]string "error"
 // @Failure 500 {object} map[string]string "error"
-// @Router /steps/{id} [put]
+// @Router /processes/steps/{id} [put]
 func (h *StepController) UpdateStep(c *gin.Context) {
-
 	id, _ := strconv.Atoi(c.Param("id"))
 
-	var step models.ProcessStep
-
-	if err := c.ShouldBindJSON(&step); err != nil {
+	var req UpdateStepRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, err)
 		return
 	}
 
-	step.ID = uint(id)
+	step := models.ProcessStep{
+		ID:          uint(id),
+		Name:        req.Name,
+		Type:        req.Type,
+		Description: req.Description,
+		Metrics:     req.Metrics,
+	}
+
+	if len(req.ExecutorLoads) > 0 {
+		step.StepExecutors = make([]models.ProcessStepExecutor, 0, len(req.ExecutorLoads))
+		for _, load := range req.ExecutorLoads {
+			step.StepExecutors = append(step.StepExecutors, models.ProcessStepExecutor{
+				EmployeeID:      load.EmployeeID,
+				WorkloadPercent: load.WorkloadPercent,
+			})
+		}
+	} else if len(req.Executors) > 0 {
+		step.Executors = req.Executors
+	}
 
 	err := h.service.UpdateStep(&step)
-
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, step)
+	updated, err := h.service.GetStep(step.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load updated step"})
+		return
+	}
+
+	c.JSON(http.StatusOK, updated)
 }
 
 // DeleteStep godoc
@@ -94,13 +169,11 @@ func (h *StepController) UpdateStep(c *gin.Context) {
 // @Param id path int true "Step ID"
 // @Success 200 {object} map[string]bool "deleted"
 // @Failure 500 {object} map[string]string "error"
-// @Router /steps/{id} [delete]
+// @Router /processes/steps/{id} [delete]
 func (h *StepController) DeleteStep(c *gin.Context) {
-
 	id, _ := strconv.Atoi(c.Param("id"))
 
 	err := h.service.DeleteStep(uint(id))
-
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, err)
 		return

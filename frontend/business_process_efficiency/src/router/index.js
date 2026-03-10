@@ -6,6 +6,7 @@ import DictionariesPage from '../components/DictionariesPage.vue'
 import ProfilePage from '../components/ProfilePage.vue'
 import ProcessRegistry from '../components/ProcessRegistry.vue'
 import ProcessCard from '../components/ProcessCard.vue'
+import DashboardsPage from '../components/DashboardsPage.vue'
 
 const routes = [
   { path: '/login', name: 'Login', component: Login },
@@ -15,6 +16,7 @@ const routes = [
   { path: '/profile', name: 'ProfilePage', component: ProfilePage, meta: { requiresAuth: true } },
   { path: '/processes', name: 'ProcessRegistry', component: ProcessRegistry, meta: { requiresAuth: true } },
   { path: '/processes/:id', name: 'ProcessCard', component: ProcessCard, meta: { requiresAuth: true } },
+  { path: '/dashboards', name: 'DashboardsPage', component: DashboardsPage, meta: { requiresAuth: true } },
   { path: '/', redirect: '/login' }
 ]
 

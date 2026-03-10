@@ -134,7 +134,7 @@ onMounted(() => {
   top: 20px;
   left: 20px;
   padding: 6px 12px;
-  background: #f3f4f6;
+  background: var(--color-soft-bg);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -180,13 +180,13 @@ onMounted(() => {
 }
 
 .form-group input:focus {
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
   outline: none;
 }
 
 .save-btn {
   padding: 12px 20px;
-  background-color: #4f46e5;
+  background-color: var(--color-primary);
   color: white;
   border-radius: 6px;
   border: none;
@@ -197,14 +197,14 @@ onMounted(() => {
 }
 
 .save-btn:hover {
-  background-color: #3730a3;
+  background-color: var(--color-primary-hover);
 }
 
 .toast {
   position: fixed;
   bottom: 30px;
   right: 30px;
-  background: #4f46e5;
+  background: var(--color-primary);
   color: white;
   padding: 12px 18px;
   border-radius: 8px;

@@ -77,13 +77,7 @@ func (h *ProcessController) GetProcess(c *gin.Context) {
 // @Failure 500 {object} map[string]string "error"
 // @Router /processes [post]
 func (h *ProcessController) CreateProcess(c *gin.Context) {
-
-	type request struct {
-		Name     string `json:"name"`
-		FolderID *uint  `json:"folderId"`
-	}
-
-	var req request
+	var req models.CreateProcessRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, err)
@@ -93,7 +87,7 @@ func (h *ProcessController) CreateProcess(c *gin.Context) {
 	userIDVal, _ := c.Get("user_id")
 	userID := userIDVal.(uint)
 
-	process, err := h.service.CreateProcess(req.Name, req.FolderID, userID)
+	process, err := h.service.CreateProcess(req.Name, req.FolderID, userID, req.RegularityCount, req.RegularityUnit)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, err)
@@ -111,28 +105,29 @@ func (h *ProcessController) CreateProcess(c *gin.Context) {
 // @Produce json
 // @Security BearerAuth
 // @Param id path int true "Process ID"
-// @Param process body models.Process true "Updated process data"
+// @Param process body models.UpdateProcessRequest true "Updated process data"
 // @Success 200 {object} models.Process
-// @Failure 400 {object} map[string]string "error"
-// @Failure 500 {object} map[string]string "error"
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
 // @Router /processes/{id} [put]
 func (h *ProcessController) UpdateProcess(c *gin.Context) {
 
-	id, _ := strconv.Atoi(c.Param("id"))
-
-	var process models.Process
-
-	if err := c.ShouldBindJSON(&process); err != nil {
-		c.JSON(http.StatusBadRequest, err)
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
 
-	process.ID = uint(id)
+	var req models.UpdateProcessRequest
 
-	err := h.service.UpdateProcess(&process)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
+	process, err := h.service.UpdateProcess(uint(id), req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -260,6 +255,45 @@ func (h *ProcessController) CreateFolder(c *gin.Context) {
 	c.JSON(http.StatusCreated, folder)
 }
 
+// UpdateFolder godoc
+// @Summary Обновление папки процесса
+// @Description Обновляет название и родительскую папку по ID
+// @Tags process-folders
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int true "Folder ID"
+// @Param folder body models.CreateFolderRequest true "Folder data"
+// @Success 200 {object} map[string]bool "updated"
+// @Failure 400 {object} map[string]string "error"
+// @Failure 500 {object} map[string]string "error"
+// @Router /process-folders/{id} [put]
+func (h *ProcessController) UpdateFolder(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	type request struct {
+		Name     string `json:"name"`
+		ParentID *uint  `json:"parentId"`
+	}
+
+	var req request
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.service.UpdateFolder(uint(id), req.Name, req.ParentID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"updated": true})
+}
+
 // DeleteFolder godoc
 // @Summary Удаление папки процесса
 // @Description Удаляет папку процесса по ID
@@ -285,4 +319,76 @@ func (h *ProcessController) DeleteFolder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// MoveProcess godoc
+// @Summary Перемещение процесса в папку
+// @Description Изменяет папку процесса по ID
+// @Tags processes
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int true "Process ID"
+// @Param move body map[string]interface{} true "Move payload"
+// @Success 200 {object} map[string]bool "moved"
+// @Failure 400 {object} map[string]string "error"
+// @Failure 500 {object} map[string]string "error"
+// @Router /processes/{id}/move [patch]
+func (h *ProcessController) MoveProcess(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid process id"})
+		return
+	}
+
+	var req struct {
+		FolderID *uint `json:"folderId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.service.MoveProcess(uint(id), req.FolderID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"moved": true})
+}
+
+// MoveFolder godoc
+// @Summary Перемещение папки
+// @Description Изменяет родительскую папку для папки по ID
+// @Tags process-folders
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int true "Folder ID"
+// @Param move body map[string]interface{} true "Move payload"
+// @Success 200 {object} map[string]bool "moved"
+// @Failure 400 {object} map[string]string "error"
+// @Failure 500 {object} map[string]string "error"
+// @Router /process-folders/{id}/move [patch]
+func (h *ProcessController) MoveFolder(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid folder id"})
+		return
+	}
+
+	var req struct {
+		ParentID *uint `json:"parentId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.service.MoveFolder(uint(id), req.ParentID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"moved": true})
 }

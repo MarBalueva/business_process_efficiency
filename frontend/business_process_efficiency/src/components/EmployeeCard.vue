@@ -3,6 +3,7 @@
     <div class="employee-card">
 
       <button class="back-btn" @click="$router.push('/employees')">← Назад</button>
+      <button class="delete-top-btn" @click="openDeleteEmployeeDialog">Удалить</button>
 
       <h2 class="employee-title">{{ fullName }}</h2>
 
@@ -70,7 +71,7 @@
               <input type="date" v-model="employee.fire_date" />
             </div>
             <div class="form-group">
-              <label>Зарплата</label>
+              <label>Ставка в час</label>
               <input type="number" v-model="employee.salary" />
             </div>
           </div>
@@ -98,10 +99,14 @@
             <b>Логин:</b> {{ user.Login }}
         </div>
 
-        <button class="icon-btn" @click="showEditUserModal = true">
-            <Pencil :size="18"/>
-            Изменить
-        </button>
+        <div class="user-actions">
+          <button class="icon-btn edit" @click="showEditUserModal = true" title="Редактировать пользователя">
+            <Pencil :size="16"/>
+          </button>
+          <button class="icon-btn delete" @click="openDeleteUserDialog" title="Удалить пользователя">
+            <Trash :size="16"/>
+          </button>
+        </div>
         </div>
 
         <div class="access-groups">
@@ -109,9 +114,8 @@
         <div class="groups-header">
             <b>Группы доступа</b>
 
-            <button class="icon-btn" @click="showAddGroupModal = true">
-            <Plus :size="18"/>
-            Добавить
+            <button class="icon-btn edit" @click="showAddGroupModal = true" title="Редактировать группы доступа">
+            <Pencil :size="16"/>
             </button>
         </div>
 
@@ -126,11 +130,9 @@
         >
             <span>{{ g.Name }}</span>
 
-            <Trash2
-            class="delete-icon"
-            :size="18"
-            @click="removeGroup(g.AccessGroupID)"
-            />
+            <button class="icon-btn delete" @click="openDeleteGroupDialog(g.AccessGroupID)">
+              <Trash :size="16"/>
+            </button>
         </div>
 
         </div>
@@ -221,6 +223,17 @@
 
   </div>
 
+ </div>
+
+<div v-if="showDeleteDialog" class="modal-overlay">
+  <div class="modal">
+    <h3>{{ deleteDialog.title }}</h3>
+    <p>{{ deleteDialog.message }}</p>
+    <div class="modal-actions">
+      <button class="cancel-btn" @click="cancelDeleteDialog">Отмена</button>
+      <button class="save-btn" @click="confirmDeleteDialog">Удалить</button>
+    </div>
+  </div>
 </div>
     <div v-if="toast.show" class="toast">{{ toast.message }}</div>
   </div>
@@ -229,7 +242,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue"
 import { useRoute } from "vue-router"
-import { Plus, Trash2, Pencil } from "lucide-vue-next"
+import { Pencil, Trash } from "lucide-vue-next"
 import api from "../api/axios"
 
 const route = useRoute()
@@ -245,6 +258,13 @@ const accessGroups = ref([])
 const showCreateUserModal = ref(false)
 const showEditUserModal = ref(false)
 const showAddGroupModal = ref(false)
+const showDeleteDialog = ref(false)
+const deleteDialog = ref({
+  title: "",
+  message: "",
+  actionType: "",
+  groupId: null
+})
 
 const selectedGroup = ref("")
 
@@ -417,6 +437,79 @@ const removeGroup = async (groupId) => {
 
 }
 
+const openDeleteEmployeeDialog = () => {
+  deleteDialog.value = {
+    title: "Удалить сотрудника?",
+    message: "Вы действительно хотите удалить этого сотрудника?",
+    actionType: "employee",
+    groupId: null
+  }
+  showDeleteDialog.value = true
+}
+
+const openDeleteUserDialog = () => {
+  if (!user.value?.ID) return
+  deleteDialog.value = {
+    title: "Удалить пользователя?",
+    message: "Вы действительно хотите удалить пользователя этого сотрудника?",
+    actionType: "user",
+    groupId: null
+  }
+  showDeleteDialog.value = true
+}
+
+const openDeleteGroupDialog = (groupId) => {
+  deleteDialog.value = {
+    title: "Удалить группу доступа?",
+    message: "Вы действительно хотите удалить группу доступа у пользователя?",
+    actionType: "group",
+    groupId
+  }
+  showDeleteDialog.value = true
+}
+
+const cancelDeleteDialog = () => {
+  showDeleteDialog.value = false
+  deleteDialog.value = { title: "", message: "", actionType: "", groupId: null }
+}
+
+const confirmDeleteDialog = async () => {
+  const token = localStorage.getItem("jwt")
+
+  try {
+    if (deleteDialog.value.actionType === "employee") {
+      await api.delete(`/employees/${route.params.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      cancelDeleteDialog()
+      showToast("Сотрудник удален")
+      window.location.href = "/employees"
+      return
+    }
+
+    if (deleteDialog.value.actionType === "user" && user.value?.ID) {
+      await api.delete(`/users/${user.value.ID}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      user.value = null
+      userGroups.value = []
+      cancelDeleteDialog()
+      showToast("Пользователь удален")
+      return
+    }
+
+    if (deleteDialog.value.actionType === "group" && deleteDialog.value.groupId) {
+      await removeGroup(deleteDialog.value.groupId)
+      cancelDeleteDialog()
+      showToast("Группа доступа удалена")
+      return
+    }
+  } catch (err) {
+    console.error(err)
+    showToast("Ошибка удаления")
+  }
+}
+
 const formatForInput = (isoString) => {
   if (!isoString) return ''
   const d = new Date(isoString)
@@ -504,7 +597,7 @@ const fullName = computed(() => {
   top: 20px;
   left: 20px;
   padding: 6px 12px;
-  background: #f3f4f6;
+  background: var(--color-soft-bg);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -513,6 +606,21 @@ const fullName = computed(() => {
 }
 
 .back-btn:hover {
+  background: #e0e0e0;
+}
+
+.delete-top-btn {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  background: var(--color-soft-bg);
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.delete-top-btn:hover {
   background: #e0e0e0;
 }
 
@@ -541,7 +649,7 @@ const fullName = computed(() => {
 }
 
 .tabs button.active {
-  background: #4f46e5;
+  background: var(--color-primary);
   color: white;
 }
 
@@ -596,7 +704,7 @@ const fullName = computed(() => {
 .form-group input[type="number"]:focus,
 .form-group input[type="password"]:focus,
 .form-group select:focus {
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
   outline: none;
 }
 
@@ -609,7 +717,7 @@ const fullName = computed(() => {
 
 .save-btn {
   padding: 12px 20px;
-  background-color: #4f46e5;
+  background-color: var(--color-primary);
   color: white;
   border-radius: 6px;
   border: none;
@@ -620,13 +728,18 @@ const fullName = computed(() => {
 }
 
 .save-btn:hover {
-  background-color: #3730a3;
+  background-color: var(--color-primary-hover);
 }
 
 .user-header{
   display:flex;
   justify-content:space-between;
   align-items:center;
+}
+
+.user-actions{
+  display:flex;
+  gap:8px;
 }
 
 .groups-header{
@@ -644,18 +757,26 @@ const fullName = computed(() => {
 }
 
 .icon-btn{
-  display:flex;
-  align-items:center;
-  gap:6px;
-  padding:6px 10px;
   border:none;
-  background:#f3f4f6;
+  background:var(--color-soft-bg);
   border-radius:6px;
+  padding:6px;
   cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.icon-btn.edit:hover{
+  background:var(--color-edit-hover);
+}
+
+.icon-btn.delete:hover{
+  background:var(--color-delete-hover);
 }
 
 .icon-btn:hover{
-  background:#e5e7eb;
+  background:var(--color-muted-bg);
 }
 
 .delete-icon{
@@ -690,7 +811,7 @@ const fullName = computed(() => {
 
 .cancel-btn{
   padding:10px 14px;
-  background:#e5e7eb;
+  background:var(--color-muted-bg);
   border:none;
   border-radius:6px;
   cursor:pointer;
@@ -700,10 +821,11 @@ const fullName = computed(() => {
   position:fixed;
   bottom:30px;
   right:30px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   padding:12px 18px;
   border-radius:8px;
   box-shadow:0 4px 10px rgba(0,0,0,0.2);
 }
 </style>
+

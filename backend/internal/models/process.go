@@ -45,6 +45,9 @@ type Process struct {
 
 	IsActive bool `gorm:"default:true"`
 
+	RegularityCount int
+	RegularityUnit  string `gorm:"type:varchar(20)"`
+
 	Versions []ProcessVersion `gorm:"foreignKey:ProcessID"`
 
 	CreatedAt time.Time
@@ -83,12 +86,26 @@ type ProcessStep struct {
 	SubprocessID *uint
 	Subprocess   *Process `gorm:"foreignKey:SubprocessID"`
 
-	Executors []Employee `gorm:"many2many:process_step_executors"`
+	Executors     []Employee            `gorm:"many2many:process_step_executors"`
+	StepExecutors []ProcessStepExecutor `gorm:"foreignKey:ProcessStepID;references:ID"`
 
-	Metrics *StepMetrics `gorm:"foreignKey:StepID"`
+	Metrics          *StepMetrics      `gorm:"foreignKey:StepID"`
+	Measurements     []StepMeasurement `gorm:"foreignKey:StepID"`
+	FinalDurationMin float64
 
 	CreatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at" json:"-" swaggerignore:"true"`
+}
+
+type ProcessStepExecutor struct {
+	ProcessStepID   uint     `gorm:"primaryKey;column:process_step_id"`
+	EmployeeID      uint     `gorm:"primaryKey;column:employee_id"`
+	WorkloadPercent float64  `gorm:"column:workload_percent;default:0"`
+	Employee        Employee `gorm:"foreignKey:EmployeeID"`
+}
+
+func (ProcessStepExecutor) TableName() string {
+	return "process_step_executors"
 }
 
 type StepMetrics struct {
@@ -174,8 +191,10 @@ type ProcessShortDTO struct {
 }
 
 type CreateProcessRequest struct {
-	Name     string `json:"name" binding:"required"`
-	FolderID *uint  `json:"folderId,omitempty"`
+	Name            string `json:"name" binding:"required"`
+	FolderID        *uint  `json:"folderId,omitempty"`
+	RegularityCount int    `json:"regularity_count"`
+	RegularityUnit  string `json:"regularity_unit"`
 }
 
 type CreateFolderRequest struct {
@@ -185,4 +204,14 @@ type CreateFolderRequest struct {
 
 type CreateVersionRequest struct {
 	ProcessID uint `json:"processId" binding:"required"`
+}
+
+type UpdateProcessRequest struct {
+	Name            string `json:"name" binding:"required"`
+	Description     string `json:"description"`
+	Regulations     string `json:"regulations"`
+	OwnerID         uint   `json:"owner_id"`
+	IsActive        bool   `json:"is_active"`
+	RegularityCount int    `json:"regularity_count"`
+	RegularityUnit  string `json:"regularity_unit"`
 }

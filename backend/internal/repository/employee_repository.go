@@ -55,6 +55,7 @@ func (r *EmployeeRepository) GetAll() ([]models.EmployeeFullResponse, error) {
 			employee_hrs.birth_date,
 			employee_hrs.hire_date,
 			employee_hrs.fire_date,
+			employee_hrs.salary,
 			employees.created_at
 		`).
 		Joins("left join employee_hrs on employee_hrs.employee_id = employees.id").

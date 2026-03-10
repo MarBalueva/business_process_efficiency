@@ -96,6 +96,7 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 			processRoutes.GET("/:id", processController.GetProcess)
 			processRoutes.POST("", processController.CreateProcess)
 			processRoutes.PUT("/:id", processController.UpdateProcess)
+			processRoutes.PATCH("/:id/move", processController.MoveProcess)
 			processRoutes.DELETE("/:id", processController.DeleteProcess)
 
 			// версии процессов
@@ -109,10 +110,12 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 
 			// замеры времени этапов
 			processRoutes.POST("/measurements/start", measurementController.Start)
+			processRoutes.GET("/measurements", measurementController.List)
 			processRoutes.POST("/measurements/pause", measurementController.Pause)
 			processRoutes.POST("/measurements/resume", measurementController.Resume)
 			processRoutes.POST("/measurements/finish", measurementController.Finish)
 			processRoutes.POST("/measurements/reset", measurementController.Reset)
+			processRoutes.DELETE("/measurements/:id", measurementController.Delete)
 		}
 
 		folderRoutes := api.Group("/process-folders")
@@ -120,6 +123,8 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 		folderRoutes.Use(middleware.RequireAccess(authService, "analyst", "admin"))
 		{
 			folderRoutes.POST("", processController.CreateFolder)
+			folderRoutes.PUT("/:id", processController.UpdateFolder)
+			folderRoutes.PATCH("/:id/move", processController.MoveFolder)
 			folderRoutes.DELETE("/:id", processController.DeleteFolder)
 		}
 

@@ -75,7 +75,7 @@ export default {
   justify-content: center;
   align-items: center;
   height: 100vh;
-  background: #f5f7fa;
+  background: var(--color-bg);
 }
 
 .login-card {
@@ -136,7 +136,7 @@ button {
   padding: 0.75rem;
   border: none;
   border-radius: 8px;
-  background: #4f46e5;
+  background: var(--color-primary);
   color: #fff;
   font-size: 1rem;
   font-weight: 500;

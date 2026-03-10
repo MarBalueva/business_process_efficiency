@@ -25,12 +25,22 @@
 
       <div class="employees-table">
 
+        <div
+          class="root-drop-zone"
+          @dragover.prevent
+          @drop.prevent="onDropToRoot"
+        >
+          Перетащите папку сюда, чтобы сделать её корневой
+        </div>
+
         <ProcessFolder
           v-for="folder in paginatedFolders"
           :key="folder.id"
           :folder="folder"
           @delete-folder="deleteFolder"
           @edit-folder="openEditFolderModal"
+          @move-process="moveProcessToFolder"
+          @move-folder="moveFolder"
         />
 
       </div>
@@ -360,6 +370,79 @@ const deleteFolder = async (id) => {
 
 }
 
+const moveProcessToFolder = async ({ processId, targetFolderId }) => {
+  if (!processId || !targetFolderId) return
+
+  try {
+    const token = localStorage.getItem("jwt")
+    await api.patch(
+      `/processes/${processId}/move`,
+      { folderId: targetFolderId },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+
+    showToast("Процесс перемещен")
+    await fetchFolders()
+  } catch (err) {
+    console.error(err)
+    showToast("Ошибка перемещения процесса")
+  }
+}
+
+const moveFolder = async ({ folderId, targetParentId }) => {
+  if (!folderId || !targetParentId || folderId === targetParentId) return
+
+  try {
+    const token = localStorage.getItem("jwt")
+    await api.patch(
+      `/process-folders/${folderId}/move`,
+      { parentId: targetParentId },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+
+    showToast("Папка перемещена")
+    await fetchFolders()
+  } catch (err) {
+    console.error(err)
+    showToast(err?.response?.data?.error || "Ошибка перемещения папки")
+  }
+}
+
+const onDropToRoot = async (event) => {
+  const raw =
+    event.dataTransfer.getData("application/json") ||
+    event.dataTransfer.getData("text/plain") ||
+    window.__bpeDragPayload
+  if (!raw) return
+
+  let payload
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return
+  }
+
+  if (payload?.type !== "folder") return
+  const folderId = Number(payload.id)
+  if (!Number.isFinite(folderId)) return
+
+  try {
+    const token = localStorage.getItem("jwt")
+    await api.patch(
+      `/process-folders/${folderId}/move`,
+      { parentId: null },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+
+    showToast("Папка перемещена в корень")
+    window.__bpeDragPayload = null
+    await fetchFolders()
+  } catch (err) {
+    console.error(err)
+    showToast(err?.response?.data?.error || "Ошибка перемещения папки")
+  }
+}
+
 const filteredFolders = computed(() => {
 
   if (!search.value) return folders.value
@@ -431,17 +514,26 @@ onMounted(fetchFolders)
 .employees-card{background:white;border-radius:12px;padding:25px;box-shadow:0 4px 20px rgba(0,0,0,0.08);min-height:520px;}
 .employees-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
 .header-actions{display:flex;align-items:center;gap:12px;}
-.search-box{display:flex;align-items:center;gap:6px;background:#f3f4f6;padding:6px 10px;border-radius:6px;}
+.search-box{display:flex;align-items:center;gap:6px;background:var(--color-soft-bg);padding:6px 10px;border-radius:6px;}
 .search-box input{border:none;background:transparent;outline:none;font-size:14px;width:200px;}
-.add-btn{padding:6px 14px;background:#4f46e5;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;}
-.add-btn:hover{background:#3730a3;}
+.add-btn{padding:6px 14px;background:var(--color-primary);color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;}
+.add-btn:hover{background:var(--color-primary-hover);}
 .employees-table{display:flex;flex-direction:column;gap:6px;}
+.root-drop-zone{
+  padding:10px 12px;
+  border:1px dashed #c7d2fe;
+  border-radius:8px;
+  color:#4b5563;
+  font-size:13px;
+  background:#f8faff;
+  margin-bottom:8px;
+}
 .folder-block{margin-left:20px;border-left:1px solid #eee;padding-left:10px;margin-bottom:10px;}
 .folder-header{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:4px;}
 .process-row{padding:4px 0;}
-.process-name{color:#4f46e5;text-decoration:none;}
+.process-name{color:var(--color-primary);text-decoration:none;}
 .process-name:hover{text-decoration:underline;}
-.delete-btn{padding:2px 8px;background:#e5e7eb;border:none;border-radius:4px;cursor:pointer;font-size:12px;}
+.delete-btn{padding:2px 8px;background:var(--color-muted-bg);border:none;border-radius:4px;cursor:pointer;font-size:12px;}
 .delete-btn:hover{background:#d1d5db;}
 .pagination{display:flex;align-items:center;gap:10px;margin-top:12px;justify-content:flex-end;}
 .pagination button{padding:6px 12px;border-radius:6px;border:1px solid #ccc;background:#f9f9f9;cursor:pointer;transition:0.2s;}
@@ -512,7 +604,7 @@ onMounted(fetchFolders)
 }
 
 .save-btn{
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   border:none;
   padding:8px 14px;
@@ -521,7 +613,7 @@ onMounted(fetchFolders)
 }
 
 .cancel-btn{
-  background:#e5e7eb;
+  background:var(--color-muted-bg);
   border:none;
   padding:8px 14px;
   border-radius:6px;
@@ -532,10 +624,11 @@ onMounted(fetchFolders)
   position:fixed;
   bottom:30px;
   right:30px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   padding:12px 18px;
   border-radius:8px;
   box-shadow:0 4px 10px rgba(0,0,0,0.2);
 }
 </style>
+

@@ -3,6 +3,10 @@ package service
 import (
 	"business_process_efficiency/internal/models"
 	"business_process_efficiency/internal/repository"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
 )
 
 type ProcessService struct {
@@ -21,13 +25,22 @@ func (s *ProcessService) GetProcess(id uint) (*models.Process, error) {
 	return s.repo.GetProcessByID(id)
 }
 
-func (s *ProcessService) CreateProcess(name string, folderID *uint, ownerID uint) (*models.Process, error) {
+func (s *ProcessService) GetStep(id uint) (*models.ProcessStep, error) {
+	return s.repo.GetStepByID(id)
+}
+
+func (s *ProcessService) CreateProcess(name string, folderID *uint, ownerID uint, regularityCount int, regularityUnit string) (*models.Process, error) {
+	if err := validateRegularity(regularityCount, regularityUnit); err != nil {
+		return nil, err
+	}
 
 	process := models.Process{
-		Name:     name,
-		FolderID: folderID,
-		OwnerID:  ownerID,
-		IsActive: true,
+		Name:            name,
+		FolderID:        folderID,
+		OwnerID:         ownerID,
+		IsActive:        true,
+		RegularityCount: regularityCount,
+		RegularityUnit:  regularityUnit,
 	}
 
 	err := s.repo.CreateProcess(&process)
@@ -48,8 +61,17 @@ func (s *ProcessService) CreateProcess(name string, folderID *uint, ownerID uint
 	return &process, nil
 }
 
-func (s *ProcessService) UpdateProcess(process *models.Process) error {
-	return s.repo.UpdateProcess(process)
+func (s *ProcessService) UpdateProcess(id uint, req models.UpdateProcessRequest) (*models.Process, error) {
+	if err := validateRegularity(req.RegularityCount, req.RegularityUnit); err != nil {
+		return nil, err
+	}
+
+	process, err := s.repo.UpdateProcess(id, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return process, nil
 }
 
 func (s *ProcessService) DeleteProcess(id uint) error {
@@ -58,13 +80,22 @@ func (s *ProcessService) DeleteProcess(id uint) error {
 
 func (s *ProcessService) CreateVersion(processID uint) (*models.ProcessVersion, error) {
 
-	version := models.ProcessVersion{
-		ProcessID: processID,
+	lastVersion, err := s.repo.GetLastVersionNumber(processID)
+	if err != nil {
+		return nil, err
 	}
 
-	err := s.repo.CreateVersion(&version)
+	version := models.ProcessVersion{
+		ProcessID: processID,
+		Version:   lastVersion + 1,
+	}
 
-	return &version, err
+	err = s.repo.CreateVersion(&version)
+	if err != nil {
+		return nil, err
+	}
+
+	return &version, nil
 }
 
 func (s *ProcessService) DeleteVersion(id uint) error {
@@ -72,10 +103,24 @@ func (s *ProcessService) DeleteVersion(id uint) error {
 }
 
 func (s *ProcessService) CreateStep(step *models.ProcessStep) error {
+	if err := validateStepExecutorWorkloads(step); err != nil {
+		return err
+	}
 	return s.repo.CreateStep(step)
 }
 
+func (s *ProcessService) GetLastStep(versionID uint, step *models.ProcessStep) error {
+	return s.repo.GetLastStepByVersion(versionID, step)
+}
+
+func (s *ProcessService) GetEmployeesByIDs(ids []uint, employees *[]models.Employee) error {
+	return s.repo.GetEmployeesByIDs(ids, employees)
+}
+
 func (s *ProcessService) UpdateStep(step *models.ProcessStep) error {
+	if err := validateStepExecutorWorkloads(step); err != nil {
+		return err
+	}
 	return s.repo.UpdateStep(step)
 }
 
@@ -156,4 +201,68 @@ func (s *ProcessService) CreateFolder(name string, parentID *uint) (*models.Proc
 
 func (s *ProcessService) DeleteFolder(id uint) error {
 	return s.repo.DeleteFolder(id)
+}
+
+func (s *ProcessService) UpdateFolder(folderID uint, name string, parentID *uint) error {
+	return s.repo.UpdateFolder(folderID, name, parentID)
+}
+
+func (s *ProcessService) MoveProcess(processID uint, folderID *uint) error {
+	return s.repo.MoveProcess(processID, folderID)
+}
+
+func (s *ProcessService) MoveFolder(folderID uint, parentID *uint) error {
+	return s.repo.MoveFolder(folderID, parentID)
+}
+
+func validateStepExecutorWorkloads(step *models.ProcessStep) error {
+	if len(step.StepExecutors) == 0 {
+		return nil
+	}
+
+	sum := 0.0
+	seen := make(map[uint]struct{}, len(step.StepExecutors))
+
+	for _, se := range step.StepExecutors {
+		if se.EmployeeID == 0 {
+			return fmt.Errorf("executor employeeId is required")
+		}
+		if _, exists := seen[se.EmployeeID]; exists {
+			return fmt.Errorf("executor %d duplicated", se.EmployeeID)
+		}
+		seen[se.EmployeeID] = struct{}{}
+
+		if se.WorkloadPercent < 0 || se.WorkloadPercent > 100 {
+			return fmt.Errorf("workload percent for executor %d must be in range 0..100", se.EmployeeID)
+		}
+
+		sum += se.WorkloadPercent
+	}
+
+	if math.Abs(sum-100) > 0.0001 {
+		return fmt.Errorf("sum of executor workload percents must be exactly 100")
+	}
+
+	return nil
+}
+
+func validateRegularity(count int, unit string) error {
+	if count < 0 {
+		return errors.New("regularity_count must be >= 0")
+	}
+
+	normalized := strings.TrimSpace(strings.ToLower(unit))
+	if count == 0 {
+		if normalized != "" {
+			return errors.New("regularity_unit must be empty when regularity_count is 0")
+		}
+		return nil
+	}
+
+	switch normalized {
+	case "day", "week", "month", "quarter", "halfyear", "year":
+		return nil
+	default:
+		return errors.New("regularity_unit must be one of: day, week, month, quarter, halfyear, year")
+	}
 }

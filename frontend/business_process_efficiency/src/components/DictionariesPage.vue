@@ -58,7 +58,7 @@
                   <Pencil :size="16"/>
                 </button>
 
-                <button class="icon-btn delete" @click="deleteItem(item.ID)">
+                <button class="icon-btn delete" @click="openDeleteDialog(item.ID)">
                   <Trash :size="16"/>
                 </button>
               </div>
@@ -94,11 +94,13 @@
 
         <h3>{{ editMode ? "Редактировать" : "Добавить" }}</h3>
 
+        <label>Наименование</label>
         <input
           v-model="form.name"
           placeholder="Название"
         />
 
+        <label>Код</label>
         <input
           v-model="form.code"
           placeholder="Код"
@@ -109,6 +111,17 @@
           <button @click="modalOpen=false" class="cancel-btn">Отмена</button>
         </div>
 
+      </div>
+    </div>
+
+    <div v-if="showDeleteDialog" class="modal-overlay">
+      <div class="modal">
+        <h3>Удалить запись?</h3>
+        <p>Вы действительно хотите удалить выбранную запись?</p>
+        <div class="modal-actions">
+          <button class="cancel-btn" @click="cancelDelete">Отмена</button>
+          <button class="save-btn" @click="confirmDelete">Удалить</button>
+        </div>
       </div>
     </div>
 
@@ -138,6 +151,8 @@ const items = ref({})
 const modalOpen = ref(false)
 const editMode = ref(false)
 const search = ref("")
+const showDeleteDialog = ref(false)
+const deletingId = ref(null)
 
 const currentPage = ref(1) 
 const itemsPerPage = 10
@@ -282,23 +297,31 @@ const saveItem = async ()=>{
   }
 }
 
-const deleteItem = async (id)=>{
+const openDeleteDialog = (id) => {
+  deletingId.value = id
+  showDeleteDialog.value = true
+}
 
-  if(!confirm("Удалить запись?")) return
+const cancelDelete = () => {
+  deletingId.value = null
+  showDeleteDialog.value = false
+}
+
+const confirmDelete = async () => {
+  if (!deletingId.value) return
 
   const token = localStorage.getItem("jwt")
 
-  try{
-
-    await api.delete(`/dict/${activeDict.value}/${id}`,{
-      headers:{Authorization:`Bearer ${token}`}
+  try {
+    await api.delete(`/dict/${activeDict.value}/${deletingId.value}`, {
+      headers: { Authorization: `Bearer ${token}` }
     })
 
-    showToast("Запись удалена")
+    showToast("������ �������")
+    cancelDelete()
     fetchDictionaries()
-
-  }catch(e){
-    showToast("Ошибка удаления")
+  } catch (e) {
+    showToast("������ ��������")
   }
 }
 
@@ -350,7 +373,7 @@ onMounted(()=>{
 }
 
 .dict-item.active{
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
 }
 
@@ -367,7 +390,7 @@ onMounted(()=>{
 
 .add-btn{
   padding:6px 14px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   border:none;
   border-radius:6px;
@@ -376,7 +399,7 @@ onMounted(()=>{
 }
 
 .add-btn:hover{
-  background:#3730a3;
+  background:var(--color-primary-hover);
 }
 
 .dict-row{
@@ -394,18 +417,18 @@ onMounted(()=>{
 
 .icon-btn{
   border:none;
-  background:#f3f4f6;
+  background:var(--color-soft-bg);
   border-radius:6px;
   padding:6px;
   cursor:pointer;
 }
 
 .icon-btn.edit:hover{
-  background:#e0e7ff;
+  background:var(--color-edit-hover);
 }
 
 .icon-btn.delete:hover{
-  background:#fee2e2;
+  background:var(--color-delete-hover);
 }
 
 .modal-overlay{
@@ -444,7 +467,7 @@ onMounted(()=>{
 }
 
 .save-btn{
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   border:none;
   padding:8px 14px;
@@ -453,7 +476,7 @@ onMounted(()=>{
 }
 
 .cancel-btn{
-  background:#e5e7eb;
+  background:var(--color-muted-bg);
   border:none;
   padding:8px 14px;
   border-radius:6px;
@@ -464,7 +487,7 @@ onMounted(()=>{
   position:fixed;
   bottom:30px;
   right:30px;
-  background:#4f46e5;
+  background:var(--color-primary);
   color:white;
   padding:12px 18px;
   border-radius:8px;
@@ -481,7 +504,7 @@ onMounted(()=>{
   display:flex;
   align-items:center;
   gap:6px;
-  background:#f3f4f6;
+  background:var(--color-soft-bg);
   padding:6px 10px;
   border-radius:6px;
 }
@@ -520,3 +543,5 @@ onMounted(()=>{
   background: #e0e0e0;
 }
 </style>
+
+

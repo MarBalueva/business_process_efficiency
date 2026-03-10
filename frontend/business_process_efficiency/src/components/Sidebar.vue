@@ -43,7 +43,7 @@ export default {
   height: 100vh;
 
   background: #ffffff;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--color-muted-bg);
 
   display: flex;
   flex-direction: column;
@@ -55,7 +55,7 @@ export default {
 .logo {
   font-size: 18px;
   font-weight: 600;
-  color: #4f46e5;
+  color: var(--color-primary);
   margin-bottom: 30px;
 }
 
@@ -75,12 +75,12 @@ export default {
 }
 
 .menu-item:hover {
-  background: #f3f4f6;
+  background: var(--color-soft-bg);
 }
 
 .router-link-active {
   background: #eef2ff;
-  color: #4f46e5;
+  color: var(--color-primary);
   font-weight: 500;
 }
 
@@ -88,7 +88,7 @@ export default {
   margin-top: auto;  
 
   border: none;
-  background: #f3f4f6;
+  background: var(--color-soft-bg);
 
   padding: 10px;
   border-radius: 8px;
@@ -99,7 +99,7 @@ export default {
 }
 
 .logout:hover {
-  background: #e5e7eb;
+  background: var(--color-muted-bg);
 }
 
 </style>

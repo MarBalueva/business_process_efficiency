@@ -32,3 +32,11 @@ func (s *MeasurementService) FinishMeasurement(id uint) error {
 func (s *MeasurementService) ResetMeasurements(stepID uint) error {
 	return s.repo.ResetMeasurements(stepID)
 }
+
+func (s *MeasurementService) DeleteMeasurement(id uint) error {
+	return s.repo.DeleteMeasurement(id)
+}
+
+func (s *MeasurementService) GetMeasurementsByStep(stepID uint) ([]models.StepMeasurement, error) {
+	return s.repo.GetMeasurementsByStep(stepID)
+}
