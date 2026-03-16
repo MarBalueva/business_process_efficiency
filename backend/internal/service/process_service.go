@@ -3,18 +3,22 @@ package service
 import (
 	"business_process_efficiency/internal/models"
 	"business_process_efficiency/internal/repository"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
 type ProcessService struct {
-	repo *repository.ProcessRepository
+	repo      *repository.ProcessRepository
+	embedder  *EmbeddingClient
 }
 
-func NewProcessService(repo *repository.ProcessRepository) *ProcessService {
-	return &ProcessService{repo: repo}
+func NewProcessService(repo *repository.ProcessRepository, embedder *EmbeddingClient) *ProcessService {
+	return &ProcessService{repo: repo, embedder: embedder}
 }
 
 func (s *ProcessService) GetRegistry() ([]models.ProcessFolder, error) {
@@ -106,7 +110,11 @@ func (s *ProcessService) CreateStep(step *models.ProcessStep) error {
 	if err := validateStepRules(step); err != nil {
 		return err
 	}
-	return s.repo.CreateStep(step)
+	if err := s.repo.CreateStep(step); err != nil {
+		return err
+	}
+	_ = s.reindexStepSemantic(context.Background(), step.ID)
+	return nil
 }
 
 func (s *ProcessService) GetLastStep(versionID uint, step *models.ProcessStep) error {
@@ -121,15 +129,182 @@ func (s *ProcessService) UpdateStep(step *models.ProcessStep) error {
 	if err := validateStepRules(step); err != nil {
 		return err
 	}
-	return s.repo.UpdateStep(step)
+	if err := s.repo.UpdateStep(step); err != nil {
+		return err
+	}
+	_ = s.reindexStepSemantic(context.Background(), step.ID)
+	return nil
 }
 
 func (s *ProcessService) DeleteStep(id uint) error {
-	return s.repo.DeleteStep(id)
+	if err := s.repo.DeleteStep(id); err != nil {
+		return err
+	}
+	_ = s.repo.DeleteStepSemanticIndex(id)
+	return nil
 }
 
 func (s *ProcessService) ReorderSteps(processVersionID uint, orderedStepIDs []uint) error {
 	return s.repo.ReorderSteps(processVersionID, orderedStepIDs)
+}
+
+func (s *ProcessService) SuggestSteps(ctx context.Context, query string, excludeProcessID *uint, limit int) ([]models.StepSuggestion, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []models.StepSuggestion{}, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	candidates, err := s.repo.ListStepSemanticCandidates(query, excludeProcessID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return []models.StepSuggestion{}, nil
+	}
+
+	queryVec, err := s.embedOne(ctx, query)
+	if err != nil {
+		// fallback: lexical ranking only
+		out := make([]models.StepSuggestion, 0, min(limit, len(candidates)))
+		for i, c := range candidates {
+			if i >= limit {
+				break
+			}
+			out = append(out, models.StepSuggestion{
+				StepID:    c.StepID,
+				ProcessID: c.ProcessID,
+				StepName:  c.StepName,
+				StepType:  c.StepType,
+				Score:     0,
+			})
+		}
+		return out, nil
+	}
+
+	type scored struct {
+		row   models.StepSemanticIndex
+		score float64
+	}
+	scoredRows := make([]scored, 0, len(candidates))
+	for _, c := range candidates {
+		vec, err := parseEmbeddingJSON(c.EmbeddingJSON)
+		if err != nil || len(vec) == 0 {
+			continue
+		}
+		score := cosineSimilarity(queryVec, vec)
+		scoredRows = append(scoredRows, scored{row: c, score: score})
+	}
+	if len(scoredRows) == 0 {
+		return []models.StepSuggestion{}, nil
+	}
+
+	sort.Slice(scoredRows, func(i, j int) bool {
+		return scoredRows[i].score > scoredRows[j].score
+	})
+
+	out := make([]models.StepSuggestion, 0, min(limit, len(scoredRows)))
+	for i, item := range scoredRows {
+		if i >= limit {
+			break
+		}
+		out = append(out, models.StepSuggestion{
+			StepID:    item.row.StepID,
+			ProcessID: item.row.ProcessID,
+			StepName:  item.row.StepName,
+			StepType:  item.row.StepType,
+			Score:     item.score,
+		})
+	}
+	return out, nil
+}
+
+func (s *ProcessService) ReindexAllSteps(ctx context.Context) (int, int, string, error) {
+	ids, err := s.repo.ListAllStepIDs()
+	if err != nil {
+		return 0, 0, "", err
+	}
+	count := 0
+	failed := 0
+	lastErr := ""
+	for _, id := range ids {
+		if err := s.reindexStepSemantic(ctx, id); err != nil {
+			failed++
+			lastErr = err.Error()
+			continue
+		}
+		count++
+	}
+	return count, failed, lastErr, nil
+}
+
+func (s *ProcessService) reindexStepSemantic(ctx context.Context, stepID uint) error {
+	source, err := s.repo.GetStepIndexSource(stepID)
+	if err != nil {
+		return err
+	}
+	vector, err := s.embedOne(ctx, source.StepName)
+	if err != nil {
+		return err
+	}
+	return s.repo.UpsertStepSemanticIndex(source.StepID, source.ProcessID, source.StepType, source.StepName, vector)
+}
+
+func (s *ProcessService) embedOne(ctx context.Context, text string) ([]float64, error) {
+	if s.embedder == nil || !s.embedder.Enabled() {
+		return nil, fmt.Errorf("embedding disabled")
+	}
+	vectors, err := s.embedder.EmbedTexts(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("invalid embedding response")
+	}
+	return vectors[0], nil
+}
+
+func parseEmbeddingJSON(raw string) ([]float64, error) {
+	var vec []float64
+	if err := json.Unmarshal([]byte(raw), &vec); err != nil {
+		return nil, err
+	}
+	return vec, nil
+}
+
+func cosineSimilarity(a []float64, b []float64) float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	if n == 0 {
+		return 0
+	}
+
+	dot := 0.0
+	normA := 0.0
+	normB := 0.0
+	for i := 0; i < n; i++ {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func min(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (s *ProcessService) GetRegistryTree() ([]*models.ProcessRegistryFolder, error) {

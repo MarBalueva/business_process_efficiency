@@ -2,6 +2,7 @@ package repository
 
 import (
 	"business_process_efficiency/internal/models"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -14,6 +15,22 @@ type ProcessRepository struct {
 
 func NewProcessRepository(db *gorm.DB) *ProcessRepository {
 	return &ProcessRepository{db: db}
+}
+
+type StepIndexSource struct {
+	StepID      uint
+	ProcessID   uint
+	ProcessName string
+	StepName    string
+	StepType    models.StepType
+}
+
+type StepSuggestionCandidate struct {
+	StepID      uint
+	ProcessID   uint
+	ProcessName string
+	StepName    string
+	StepType    models.StepType
 }
 
 func (r *ProcessRepository) GetRegistry() ([]models.ProcessFolder, error) {
@@ -1290,4 +1307,100 @@ func (r *ProcessRepository) validateFolderMove(folderID uint, parentID *uint) er
 		}
 	}
 	return nil
+}
+
+func (r *ProcessRepository) GetStepIndexSource(stepID uint) (*StepIndexSource, error) {
+	var row StepIndexSource
+	err := r.db.Table("process_steps s").
+		Select("s.id as step_id, s.name as step_name, s.type as step_type, pv.process_id as process_id, p.name as process_name").
+		Joins("JOIN process_versions pv ON pv.id = s.process_version_id").
+		Joins("JOIN processes p ON p.id = pv.process_id").
+		Where("s.id = ?", stepID).
+		Scan(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	if row.StepID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &row, nil
+}
+
+func (r *ProcessRepository) UpsertStepSemanticIndex(stepID uint, processID uint, stepType models.StepType, stepName string, vector []float64) error {
+	raw, err := json.Marshal(vector)
+	if err != nil {
+		return err
+	}
+	row := models.StepSemanticIndex{
+		StepID:        stepID,
+		ProcessID:     processID,
+		StepType:      stepType,
+		StepName:      stepName,
+		EmbeddingJSON: string(raw),
+	}
+	return r.db.
+		Where("step_id = ?", stepID).
+		Assign(row).
+		FirstOrCreate(&models.StepSemanticIndex{}).Error
+}
+
+func (r *ProcessRepository) DeleteStepSemanticIndex(stepID uint) error {
+	return r.db.Where("step_id = ?", stepID).Delete(&models.StepSemanticIndex{}).Error
+}
+
+func (r *ProcessRepository) ListStepSemanticCandidates(_ string, excludeProcessID *uint, limit int) ([]models.StepSemanticIndex, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	candidateLimit := limit * 20
+	if candidateLimit < 100 {
+		candidateLimit = 100
+	}
+	if candidateLimit > 400 {
+		candidateLimit = 400
+	}
+
+	q := r.db.Model(&models.StepSemanticIndex{})
+	if excludeProcessID != nil && *excludeProcessID > 0 {
+		q = q.Where("process_id <> ?", *excludeProcessID)
+	}
+
+	var rows []models.StepSemanticIndex
+	err := q.Order("updated_at DESC").Limit(candidateLimit).Find(&rows).Error
+	return rows, err
+}
+
+func (r *ProcessRepository) ListAllStepIDs() ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&models.ProcessStep{}).Pluck("id", &ids).Error
+	return ids, err
+}
+
+func (r *ProcessRepository) ListStepSuggestionCandidates(query string, excludeProcessID *uint, limit int) ([]StepSuggestionCandidate, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	candidateLimit := limit * 20
+	if candidateLimit < 60 {
+		candidateLimit = 60
+	}
+	if candidateLimit > 300 {
+		candidateLimit = 300
+	}
+
+	q := r.db.Table("process_steps s").
+		Select("s.id as step_id, pv.process_id as process_id, p.name as process_name, s.name as step_name, s.type as step_type").
+		Joins("JOIN process_versions pv ON pv.id = s.process_version_id").
+		Joins("JOIN processes p ON p.id = pv.process_id")
+
+	if excludeProcessID != nil && *excludeProcessID > 0 {
+		q = q.Where("pv.process_id <> ?", *excludeProcessID)
+	}
+	if query != "" {
+		q = q.Where("s.name ILIKE ?", "%"+query+"%")
+	}
+
+	var rows []StepSuggestionCandidate
+	err := q.Order("s.updated_at DESC, s.id DESC").Limit(candidateLimit).Scan(&rows).Error
+	return rows, err
 }

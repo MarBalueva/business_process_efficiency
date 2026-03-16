@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"business_process_efficiency/internal/config"
 	"business_process_efficiency/internal/controller"
 	"business_process_efficiency/internal/database"
 	"business_process_efficiency/internal/middleware"
@@ -15,10 +16,10 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
-func SetupRoutes(r *gin.Engine, jwtSecret string) {
+func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 
 	userController := controller.NewUserController()
-	authService := service.NewAuthService(jwtSecret)
+	authService := service.NewAuthService(cfg.JWTSecret)
 	authController := controller.NewAuthController(authService)
 
 	employeeRepo := repository.NewEmployeeRepository(database.DB)
@@ -34,7 +35,12 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 	profileController := controller.NewProfileController(profileService)
 
 	processRepo := repository.NewProcessRepository(database.DB)
-	processService := service.NewProcessService(processRepo)
+	embeddingClient := service.NewEmbeddingClient(
+		cfg.EmbeddingEnabled,
+		cfg.EmbeddingURL,
+		cfg.EmbeddingTimeout,
+	)
+	processService := service.NewProcessService(processRepo, embeddingClient)
 	processController := controller.NewProcessController(processService)
 
 	stepController := controller.NewStepController(processService)
@@ -105,6 +111,8 @@ func SetupRoutes(r *gin.Engine, jwtSecret string) {
 
 			// этапы процессов
 			processRoutes.POST("/steps", stepController.CreateStep)
+			processRoutes.GET("/steps/suggest", stepController.SuggestSteps)
+			processRoutes.POST("/steps/reindex", stepController.ReindexStepSuggestions)
 			processRoutes.PUT("/steps/:id", stepController.UpdateStep)
 			processRoutes.POST("/steps/reorder", stepController.ReorderSteps)
 			processRoutes.DELETE("/steps/:id", stepController.DeleteStep)

@@ -236,7 +236,32 @@
           <div class="modal-columns">
             <div class="modal-column">
               <label>Название *</label>
-              <input v-model="form.name" type="text" />
+              <div class="step-name-wrap">
+                <input
+                  v-model="form.name"
+                  type="text"
+                  @input="onStepNameInput"
+                  @focus="onStepNameFocus"
+                  @blur="stepNameSuggestOpen = false"
+                />
+                <div v-if="stepNameSuggestOpen" class="step-name-suggest">
+                  <div v-if="stepNameSuggestLoading" class="step-name-suggest-item muted">Поиск похожих этапов...</div>
+                  <button
+                    v-for="item in stepNameSuggestions"
+                    :key="`suggest-${item.stepId}`"
+                    type="button"
+                    class="step-name-suggest-item"
+                    @mousedown.prevent
+                    @click="applyStepNameSuggestion(item)"
+                  >
+                    <span class="suggest-name">{{ item.stepName }}</span>
+                    <span class="suggest-meta">{{ getStepTypeLabel(item.stepType) }}</span>
+                  </button>
+                  <div v-if="!stepNameSuggestLoading && stepNameSuggestions.length === 0" class="step-name-suggest-item muted">
+                    Похожих этапов не найдено
+                  </div>
+                </div>
+              </div>
 
               <label>Тип *</label>
               <select v-model="form.type" @change="onStepTypeChange">
@@ -576,6 +601,10 @@ const createAfterStepId = ref(null)
 const draggedStepId = ref(null)
 const dragOverStepId = ref(null)
 const isReorderingSteps = ref(false)
+const stepNameSuggestions = ref([])
+const stepNameSuggestOpen = ref(false)
+const stepNameSuggestLoading = ref(false)
+let stepNameSuggestTimer = null
 const graphSvgRef = ref(null)
 const graphScale = ref(1)
 const graphPan = ref({ x: 0, y: 0 })
@@ -648,6 +677,59 @@ const showToast = (message) => {
   }, 2500)
 }
 
+const clearStepNameSuggestTimer = () => {
+  if (stepNameSuggestTimer) {
+    clearTimeout(stepNameSuggestTimer)
+    stepNameSuggestTimer = null
+  }
+}
+
+const fetchStepNameSuggestions = async () => {
+  const q = String(form.value.name || "").trim()
+  if (q.length < 3) {
+    stepNameSuggestions.value = []
+    stepNameSuggestOpen.value = false
+    return
+  }
+
+  const token = localStorage.getItem("jwt")
+  if (!token) return
+
+  stepNameSuggestLoading.value = true
+  try {
+    const res = await api.get("/processes/steps/suggest", {
+      params: { q, limit: 5, excludeProcessId: props.processId },
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    stepNameSuggestions.value = Array.isArray(res?.data) ? res.data : []
+    stepNameSuggestOpen.value = true
+  } catch (err) {
+    console.error(err)
+    stepNameSuggestions.value = []
+    stepNameSuggestOpen.value = false
+  } finally {
+    stepNameSuggestLoading.value = false
+  }
+}
+
+const onStepNameInput = () => {
+  clearStepNameSuggestTimer()
+  stepNameSuggestTimer = setTimeout(() => {
+    fetchStepNameSuggestions()
+  }, 300)
+}
+
+const onStepNameFocus = () => {
+  if (String(form.value.name || "").trim().length >= 3) {
+    fetchStepNameSuggestions()
+  }
+}
+
+const applyStepNameSuggestion = (item) => {
+  form.value.name = item?.stepName || form.value.name
+  stepNameSuggestOpen.value = false
+}
+
 const getStatisticsPercentSum = () => {
   return Number(form.value.minPercent || 0) +
     Number(form.value.avgPercent || 0) +
@@ -686,6 +768,10 @@ const resetForm = () => {
   deletingStepId.value = null
   showDeleteStepDialog.value = false
   createAfterStepId.value = null
+  stepNameSuggestions.value = []
+  stepNameSuggestOpen.value = false
+  stepNameSuggestLoading.value = false
+  clearStepNameSuggestTimer()
 }
 
 const closeStepModal = () => {
@@ -1981,6 +2067,57 @@ const formatDateTime = (iso) => {
   margin-top: -4px;
   color: #6b7280;
   font-size: 12px;
+}
+
+.step-name-wrap {
+  position: relative;
+}
+
+.step-name-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.step-name-suggest-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.step-name-suggest-item:hover {
+  background: #f8fafc;
+}
+
+.step-name-suggest-item.muted {
+  color: #6b7280;
+  cursor: default;
+}
+
+.suggest-name {
+  color: #111827;
+}
+
+.suggest-meta {
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .picker-toggle {

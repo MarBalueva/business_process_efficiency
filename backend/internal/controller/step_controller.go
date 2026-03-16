@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"business_process_efficiency/internal/models"
 	"business_process_efficiency/internal/service"
@@ -304,4 +305,72 @@ func (h *StepController) ReorderSteps(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"reordered": true})
+}
+
+// SuggestSteps godoc
+// @Summary Подсказки похожих этапов по названию
+// @Description Возвращает наиболее похожие по смыслу этапы из других процессов
+// @Tags process-steps
+// @Produce json
+// @Security BearerAuth
+// @Param q query string true "Поисковый запрос"
+// @Param limit query int false "Количество подсказок"
+// @Param excludeProcessId query int false "Исключить текущий процесс"
+// @Success 200 {array} models.StepSuggestion
+// @Failure 400 {object} map[string]string "error"
+// @Failure 500 {object} map[string]string "error"
+// @Router /processes/steps/suggest [get]
+func (h *StepController) SuggestSteps(c *gin.Context) {
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q is required"})
+		return
+	}
+
+	limit := 5
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	var excludeProcessID *uint
+	if raw := c.Query("excludeProcessId"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err == nil && n > 0 {
+			v := uint(n)
+			excludeProcessID = &v
+		}
+	}
+
+	suggestions, err := h.service.SuggestSteps(c.Request.Context(), query, excludeProcessID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, suggestions)
+}
+
+// ReindexStepSuggestions godoc
+// @Summary Полная переиндексация семантического поиска этапов
+// @Description Пересчитывает эмбеддинги для всех этапов
+// @Tags process-steps
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} map[string]int "indexed"
+// @Failure 500 {object} map[string]string "error"
+// @Router /processes/steps/reindex [post]
+func (h *StepController) ReindexStepSuggestions(c *gin.Context) {
+	indexed, failed, lastErr, err := h.service.ReindexAllSteps(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"indexed":   indexed,
+		"failed":    failed,
+		"lastError": lastErr,
+	})
 }

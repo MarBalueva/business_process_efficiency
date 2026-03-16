@@ -34,7 +34,7 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	routes.SetupRoutes(r, cfg.JWTSecret)
+	routes.SetupRoutes(r, cfg)
 
 	log.Println("Сервер запущен на :8080")
 	if err := r.Run(":8080"); err != nil {

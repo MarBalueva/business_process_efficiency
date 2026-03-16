@@ -57,7 +57,8 @@ func Migrate() {
 		&models.StepTimeStatistics{},
 		&models.StepMeasurement{},
 		&models.MeasurementPause{},
-		&models.ProcessStepLink{})
+		&models.ProcessStepLink{},
+		&models.StepSemanticIndex{})
 
 	if err != nil {
 		log.Fatal("Ошибка миграции:", err)
