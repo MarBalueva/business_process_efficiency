@@ -242,20 +242,20 @@
                   type="text"
                   @input="onStepNameInput"
                   @focus="onStepNameFocus"
-                  @blur="stepNameSuggestOpen = false"
+                  @blur="closeStepNameSuggestions"
                 />
                 <div v-if="stepNameSuggestOpen" class="step-name-suggest">
                   <div v-if="stepNameSuggestLoading" class="step-name-suggest-item muted">Поиск похожих этапов...</div>
                   <button
                     v-for="item in stepNameSuggestions"
-                    :key="`suggest-${item.stepId}`"
+                    :key="`suggest-${getSuggestionStepId(item)}`"
                     type="button"
                     class="step-name-suggest-item"
-                    @mousedown.prevent
-                    @click="applyStepNameSuggestion(item)"
+                    @pointerdown.prevent.stop="applyStepNameSuggestion(item)"
+                    @click.prevent.stop
                   >
-                    <span class="suggest-name">{{ item.stepName }}</span>
-                    <span class="suggest-meta">{{ getStepTypeLabel(item.stepType) }}</span>
+                    <span class="suggest-name">{{ getSuggestionStepName(item) }}</span>
+                    <span class="suggest-meta">{{ getStepTypeLabel(getSuggestionStepType(item)) }}</span>
                   </button>
                   <div v-if="!stepNameSuggestLoading && stepNameSuggestions.length === 0" class="step-name-suggest-item muted">
                     Похожих этапов не найдено
@@ -605,6 +605,7 @@ const stepNameSuggestions = ref([])
 const stepNameSuggestOpen = ref(false)
 const stepNameSuggestLoading = ref(false)
 let stepNameSuggestTimer = null
+let stepNameSuggestBlurTimer = null
 const graphSvgRef = ref(null)
 const graphScale = ref(1)
 const graphPan = ref({ x: 0, y: 0 })
@@ -684,6 +685,21 @@ const clearStepNameSuggestTimer = () => {
   }
 }
 
+const clearStepNameSuggestBlurTimer = () => {
+  if (stepNameSuggestBlurTimer) {
+    clearTimeout(stepNameSuggestBlurTimer)
+    stepNameSuggestBlurTimer = null
+  }
+}
+
+const closeStepNameSuggestions = () => {
+  clearStepNameSuggestBlurTimer()
+  stepNameSuggestBlurTimer = setTimeout(() => {
+    stepNameSuggestOpen.value = false
+    stepNameSuggestBlurTimer = null
+  }, 150)
+}
+
 const fetchStepNameSuggestions = async () => {
   const q = String(form.value.name || "").trim()
   if (q.length < 3) {
@@ -725,15 +741,98 @@ const onStepNameFocus = () => {
   }
 }
 
-const applyStepNameSuggestion = (item) => {
-  form.value.name = item?.stepName || form.value.name
+const getStepMetrics = (step) => step?.Metrics ?? step?.metrics ?? {}
+const getStepTimeStatistics = (step) => getStepMetrics(step)?.TimeStatistics ?? getStepMetrics(step)?.timeStatistics ?? {}
+const getStepExecutorLoads = (step) => step?.StepExecutors ?? step?.stepExecutors ?? []
+const getSuggestionStepId = (item) => Number(item?.stepId ?? item?.StepID ?? item?.step_id)
+const getSuggestionStepName = (item) => item?.stepName ?? item?.StepName ?? item?.step_name ?? ""
+const getSuggestionStepType = (item) => item?.stepType ?? item?.StepType ?? item?.step_type ?? ""
+
+const copySuggestedStepToForm = (step, fallbackItem = {}) => {
+  const stepType = step?.Type || step?.type || getSuggestionStepType(fallbackItem) || form.value.type
+  const timeTrackable = isTimeTrackableType(stepType)
+  const executorAllowed = isExecutorAllowedType(stepType)
+  const metrics = getStepMetrics(step)
+  const stat = getStepTimeStatistics(step)
+  const executorLoads = executorAllowed
+    ? getStepExecutorLoads(step)
+        .map((se) => ({
+          employeeId: Number(se.EmployeeID ?? se.employeeId),
+          workloadPercent: Number(se.WorkloadPercent ?? se.workloadPercent ?? 0)
+        }))
+        .filter((se) => Number.isFinite(se.employeeId) && se.employeeId > 0)
+    : []
+
+  form.value = {
+    ...form.value,
+    name: step?.Name || step?.name || getSuggestionStepName(fallbackItem) || form.value.name,
+    type: stepType,
+    description: step?.Description || step?.description || "",
+    closesStepId: 0,
+    previousStepIds: [],
+    executorIds: executorLoads.map((se) => se.employeeId),
+    executorPercents: Object.fromEntries(executorLoads.map((se) => [se.employeeId, se.workloadPercent])),
+    parallelBranches: [],
+    conditionBranches: [],
+    plannedTimeMin: timeTrackable ? Number(metrics?.PlannedTimeMin ?? metrics?.plannedTimeMin ?? 0) : 0,
+    useStatistics: timeTrackable ? !!(metrics?.TimeStatistics ?? metrics?.timeStatistics) : false,
+    minTimeMin: timeTrackable ? Number(stat?.MinTime ?? stat?.minTime ?? 0) : 0,
+    minPercent: timeTrackable ? Number(stat?.MinPercent ?? stat?.minPercent ?? 0) : 0,
+    avgTimeMin: timeTrackable ? Number(stat?.AvgTime ?? stat?.avgTime ?? 0) : 0,
+    avgPercent: timeTrackable ? Number(stat?.AvgPercent ?? stat?.avgPercent ?? 0) : 0,
+    maxTimeMin: timeTrackable ? Number(stat?.MaxTime ?? stat?.maxTime ?? 0) : 0,
+    maxPercent: timeTrackable ? Number(stat?.MaxPercent ?? stat?.maxPercent ?? 0) : 0
+  }
+
+  showExecutorPicker.value = false
+}
+
+const applyStepNameSuggestion = async (item) => {
+  clearStepNameSuggestBlurTimer()
+  copySuggestedStepToForm(null, item)
   stepNameSuggestOpen.value = false
+
+  const stepId = getSuggestionStepId(item)
+  if (!Number.isFinite(stepId) || stepId <= 0) return
+
+  const token = localStorage.getItem("jwt")
+  if (!token) return
+
+  try {
+    const res = await api.get(`/processes/steps/details/${stepId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    copySuggestedStepToForm(res?.data, item)
+    showToast("Данные этапа скопированы из подсказки")
+  } catch (err) {
+    console.error(err)
+    showToast("Не удалось загрузить полные данные подсказки")
+  }
 }
 
 const getStatisticsPercentSum = () => {
   return Number(form.value.minPercent || 0) +
     Number(form.value.avgPercent || 0) +
     Number(form.value.maxPercent || 0)
+}
+
+const buildStepMetricsPayload = (canUseTimeSettings) => {
+  if (!canUseTimeSettings) return null
+
+  return {
+    PlannedTimeMin: Number(form.value.plannedTimeMin) || 0,
+    TimeStatistics: form.value.useStatistics
+      ? {
+          MinTime: Number(form.value.minTimeMin) || 0,
+          MinPercent: Number(form.value.minPercent) || 0,
+          AvgTime: Number(form.value.avgTimeMin) || 0,
+          AvgPercent: Number(form.value.avgPercent) || 0,
+          MaxTime: Number(form.value.maxTimeMin) || 0,
+          MaxPercent: Number(form.value.maxPercent) || 0,
+          WeightedAvg: Number(calculatedWeightedAvg.value) || 0
+        }
+      : null
+  }
 }
 
 const resetForm = () => {
@@ -772,6 +871,7 @@ const resetForm = () => {
   stepNameSuggestOpen.value = false
   stepNameSuggestLoading.value = false
   clearStepNameSuggestTimer()
+  clearStepNameSuggestBlurTimer()
 }
 
 const closeStepModal = () => {
@@ -1789,6 +1889,7 @@ const saveStep = async () => {
 
   try {
     const token = localStorage.getItem("jwt")
+    const metricsPayload = buildStepMetricsPayload(canUseTimeSettings)
 
     if (editMode.value && editingStepId.value) {
       const updatedStepId = Number(editingStepId.value)
@@ -1816,22 +1917,7 @@ const saveStep = async () => {
             nextStepId: b.nextStepId,
             probabilityPercent: b.probabilityPercent
           })),
-          Metrics: canUseTimeSettings
-            ? {
-                PlannedTimeMin: Number(form.value.plannedTimeMin) || 0,
-                TimeStatistics: form.value.useStatistics
-                  ? {
-                      MinTime: Number(form.value.minTimeMin) || 0,
-                      MinPercent: Number(form.value.minPercent) || 0,
-                      AvgTime: Number(form.value.avgTimeMin) || 0,
-                      AvgPercent: Number(form.value.avgPercent) || 0,
-                      MaxTime: Number(form.value.maxTimeMin) || 0,
-                      MaxPercent: Number(form.value.maxPercent) || 0,
-                      WeightedAvg: Number(calculatedWeightedAvg.value) || 0
-                    }
-                  : null
-              }
-            : null
+          Metrics: metricsPayload
         },
         { headers: { Authorization: `Bearer ${token}` } }
       )
@@ -1848,11 +1934,18 @@ const saveStep = async () => {
           closesStepId: isClosingStep ? closesStepId : null,
           previousStepIds: isClosingStep ? previousStepIds : regularPreviousStepIds,
           executorIds: canUseExecutors ? executorIds : [],
+          executorLoads: canUseExecutors
+            ? executorIds.map((id) => ({
+                employeeId: id,
+                workloadPercent: Number(form.value.executorPercents?.[id] ?? 0)
+              }))
+            : [],
           parallelBranches: parallelBranches.map((b) => ({ nextStepId: b.nextStepId })),
           conditionBranches: conditionBranches.map((b) => ({
             nextStepId: b.nextStepId,
             probabilityPercent: b.probabilityPercent
-          }))
+          })),
+          metrics: metricsPayload
         },
         { headers: { Authorization: `Bearer ${token}` } }
       )

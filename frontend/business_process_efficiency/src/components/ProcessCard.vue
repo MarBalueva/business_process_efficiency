@@ -126,13 +126,6 @@
           </div>
 
           <div class="chart-card">
-            <h4>Время ожидания между этапами</h4>
-            <div class="chart-wrap">
-              <Line :data="waitingChartData" :options="waitingChartOptions" />
-            </div>
-          </div>
-
-          <div class="chart-card">
             <h4>Плановое и фактическое время этапов</h4>
             <div class="chart-wrap">
               <Bar :data="planFactChartData" :options="planFactChartOptions" />
@@ -185,7 +178,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue"
 import { useRoute } from "vue-router"
-import { Bar, Doughnut, Line } from "vue-chartjs"
+import { Bar, Doughnut } from "vue-chartjs"
 import {
   Chart as ChartJS,
   Title,
@@ -193,8 +186,6 @@ import {
   Legend,
   BarElement,
   ArcElement,
-  PointElement,
-  LineElement,
   CategoryScale,
   LinearScale
 } from "chart.js"
@@ -207,8 +198,6 @@ ChartJS.register(
   Legend,
   BarElement,
   ArcElement,
-  PointElement,
-  LineElement,
   CategoryScale,
   LinearScale
 )
@@ -459,37 +448,6 @@ const groupedExpectedTotals = computed(() => {
 const totalProcessMinutes = computed(() => groupedExpectedTotals.value.minutes)
 const totalProcessCost = computed(() => groupedExpectedTotals.value.cost)
 
-const waitingRows = computed(() => {
-  const rows = []
-  for (let i = 0; i < analyticsSteps.value.length - 1; i += 1) {
-    const current = analyticsSteps.value[i]
-    const next = analyticsSteps.value[i + 1]
-
-    const currentFinished = getStepMeasurements(current)
-      .filter((m) => !!m?.FinishedAt)
-      .map((m) => new Date(m.FinishedAt).getTime())
-      .filter((v) => Number.isFinite(v))
-    const nextStarted = getStepMeasurements(next)
-      .filter((m) => !!m?.StartedAt)
-      .map((m) => new Date(m.StartedAt).getTime())
-      .filter((v) => Number.isFinite(v))
-
-    const maxFinish = currentFinished.length ? Math.max(...currentFinished) : null
-    const minStart = nextStarted.length ? Math.min(...nextStarted) : null
-
-    let waitSec = 0
-    if (maxFinish !== null && minStart !== null) {
-      waitSec = Math.max(0, Math.round((minStart - maxFinish) / 1000))
-    }
-
-    rows.push({
-      label: `${getStepName(current)} -> ${getStepName(next)}`,
-      waitMin: waitSec / 60
-    })
-  }
-  return rows
-})
-
 const employeeDistributionRows = computed(() => {
   const byEmployee = new Map()
   for (const step of analyticsSteps.value) {
@@ -601,28 +559,6 @@ const stepCostChartOptions = {
   scales: {
     x: { beginAtZero: true, title: { display: true, text: "₽" } },
     y: { ticks: { autoSkip: false } }
-  }
-}
-
-const waitingChartData = computed(() => ({
-  labels: waitingRows.value.map((r) => r.label),
-  datasets: [
-    {
-      label: "Ожидание (мин)",
-      data: waitingRows.value.map((r) => Number(r.waitMin.toFixed(2))),
-      borderColor: palette.warning,
-      backgroundColor: "rgba(245,158,11,0.20)",
-      fill: true,
-      tension: 0.3
-    }
-  ]
-}))
-
-const waitingChartOptions = {
-  ...commonChartOptions,
-  scales: {
-    x: { ticks: { maxRotation: 40, minRotation: 20 } },
-    y: { beginAtZero: true, title: { display: true, text: "Минуты" } }
   }
 }
 
@@ -995,10 +931,6 @@ onMounted(async () => {
   height: 280px;
 }
 
-.analytics-grid .chart-card:last-child {
-  grid-column: 1 / -1;
-}
-
 .columns {
   display: flex;
   gap: 40px;
@@ -1074,9 +1006,6 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 
-  .analytics-grid .chart-card:last-child {
-    grid-column: auto;
-  }
 }
 
 .toast {

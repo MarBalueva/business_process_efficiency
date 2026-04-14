@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 type ProcessService struct {
@@ -171,25 +172,50 @@ func (s *ProcessService) SuggestSteps(ctx context.Context, query string, exclude
 	queryVec, err := s.embedOne(ctx, query)
 	if err != nil {
 		// fallback: lexical ranking only
-		out := make([]models.StepSuggestion, 0, min(limit, len(candidates)))
-		for i, c := range candidates {
-			if i >= limit {
+		type lexicalScored struct {
+			row   models.StepSemanticIndex
+			score float64
+		}
+		rows := make([]lexicalScored, 0, len(candidates))
+		for _, c := range candidates {
+			score := lexicalSuggestionScore(query, c.StepName)
+			if score <= 0 {
+				continue
+			}
+			rows = append(rows, lexicalScored{row: c, score: score})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			return rows[i].score > rows[j].score
+		})
+
+		out := make([]models.StepSuggestion, 0, min(limit, len(rows)))
+		seen := make(map[string]struct{}, len(rows))
+		for _, item := range rows {
+			if len(out) >= limit {
 				break
 			}
+			c := item.row
+			key := suggestionDedupeKey(c.StepName, c.StepType)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 			out = append(out, models.StepSuggestion{
 				StepID:    c.StepID,
 				ProcessID: c.ProcessID,
 				StepName:  c.StepName,
 				StepType:  c.StepType,
-				Score:     0,
+				Score:     item.score,
 			})
 		}
 		return out, nil
 	}
 
 	type scored struct {
-		row   models.StepSemanticIndex
-		score float64
+		row      models.StepSemanticIndex
+		score    float64
+		semantic float64
+		lexical  float64
 	}
 	scoredRows := make([]scored, 0, len(candidates))
 	for _, c := range candidates {
@@ -197,22 +223,36 @@ func (s *ProcessService) SuggestSteps(ctx context.Context, query string, exclude
 		if err != nil || len(vec) == 0 {
 			continue
 		}
-		score := cosineSimilarity(queryVec, vec)
-		scoredRows = append(scoredRows, scored{row: c, score: score})
+		semanticScore := cosineSimilarity(queryVec, vec)
+		lexicalScore := lexicalSuggestionScore(query, c.StepName)
+		score := semanticScore*0.75 + lexicalScore*0.45
+		if score < 0.2 {
+			continue
+		}
+		scoredRows = append(scoredRows, scored{row: c, score: score, semantic: semanticScore, lexical: lexicalScore})
 	}
 	if len(scoredRows) == 0 {
 		return []models.StepSuggestion{}, nil
 	}
 
 	sort.Slice(scoredRows, func(i, j int) bool {
+		if scoredRows[i].lexical != scoredRows[j].lexical {
+			return scoredRows[i].lexical > scoredRows[j].lexical
+		}
 		return scoredRows[i].score > scoredRows[j].score
 	})
 
 	out := make([]models.StepSuggestion, 0, min(limit, len(scoredRows)))
-	for i, item := range scoredRows {
-		if i >= limit {
+	seen := make(map[string]struct{}, len(scoredRows))
+	for _, item := range scoredRows {
+		if len(out) >= limit {
 			break
 		}
+		key := suggestionDedupeKey(item.row.StepName, item.row.StepType)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, models.StepSuggestion{
 			StepID:    item.row.StepID,
 			ProcessID: item.row.ProcessID,
@@ -222,6 +262,61 @@ func (s *ProcessService) SuggestSteps(ctx context.Context, query string, exclude
 		})
 	}
 	return out, nil
+}
+
+func lexicalSuggestionScore(query string, stepName string) float64 {
+	query = strings.ToLower(strings.TrimSpace(query))
+	stepName = strings.ToLower(strings.TrimSpace(stepName))
+	if query == "" || stepName == "" {
+		return 0
+	}
+	if query == stepName {
+		return 1
+	}
+
+	score := 0.0
+	if strings.Contains(stepName, query) {
+		score = 0.85
+	}
+
+	queryTokens := splitTextTokens(query)
+	nameTokens := splitTextTokens(stepName)
+	if len(queryTokens) == 0 || len(nameTokens) == 0 {
+		return score
+	}
+
+	matches := 0
+	for _, queryToken := range queryTokens {
+		if len([]rune(queryToken)) < 3 {
+			continue
+		}
+		for _, nameToken := range nameTokens {
+			if queryToken == nameToken {
+				matches++
+				score = math.Max(score, 0.8)
+				break
+			}
+			if strings.Contains(nameToken, queryToken) || strings.Contains(queryToken, nameToken) {
+				matches++
+				score = math.Max(score, 0.65)
+				break
+			}
+		}
+	}
+	if len(queryTokens) > 0 && matches > 0 {
+		score = math.Max(score, 0.45+0.35*float64(matches)/float64(len(queryTokens)))
+	}
+	return score
+}
+
+func splitTextTokens(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+}
+
+func suggestionDedupeKey(stepName string, stepType models.StepType) string {
+	return strings.ToLower(strings.TrimSpace(string(stepType) + ":" + stepName))
 }
 
 func (s *ProcessService) ReindexAllSteps(ctx context.Context) (int, int, string, error) {

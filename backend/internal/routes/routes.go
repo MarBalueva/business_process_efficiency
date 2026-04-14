@@ -112,6 +112,7 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 			// этапы процессов
 			processRoutes.POST("/steps", stepController.CreateStep)
 			processRoutes.GET("/steps/suggest", stepController.SuggestSteps)
+			processRoutes.GET("/steps/details/:id", stepController.GetStep)
 			processRoutes.POST("/steps/reindex", stepController.ReindexStepSuggestions)
 			processRoutes.PUT("/steps/:id", stepController.UpdateStep)
 			processRoutes.POST("/steps/reorder", stepController.ReorderSteps)

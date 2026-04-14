@@ -27,8 +27,8 @@ type ExecutorLoadRequest struct {
 }
 
 type ConditionBranchRequest struct {
-	NextStepID          uint    `json:"nextStepId" binding:"required"`
-	ProbabilityPercent  float64 `json:"probabilityPercent"`
+	NextStepID         uint    `json:"nextStepId" binding:"required"`
+	ProbabilityPercent float64 `json:"probabilityPercent"`
 }
 
 type ParallelBranchRequest struct {
@@ -36,31 +36,32 @@ type ParallelBranchRequest struct {
 }
 
 type CreateStepRequest struct {
-	ProcessVersionID uint                  `json:"processVersionId" binding:"required"`
-	Name             string                `json:"name" binding:"required"`
-	Type             string                `json:"type" binding:"required,oneof=START END INTERMEDIATE SUBPROCESS OPERATION CONDITION PARALLEL_GATEWAY PARALLEL_END CONDITION_END"`
-	Description      string                `json:"description,omitempty"`
-	ClosesStepID     *uint                 `json:"closesStepId,omitempty"`
-	PreviousStepIDs  []uint                `json:"previousStepIds,omitempty"`
-	ExecutorIDs      []uint                `json:"executorIds,omitempty"`
-	ExecutorLoads    []ExecutorLoadRequest `json:"executorLoads,omitempty"`
-	ParallelStepIDs  []uint                `json:"parallelStepIds,omitempty"`
-	ParallelBranches []ParallelBranchRequest `json:"parallelBranches,omitempty"`
+	ProcessVersionID  uint                     `json:"processVersionId" binding:"required"`
+	Name              string                   `json:"name" binding:"required"`
+	Type              string                   `json:"type" binding:"required,oneof=START END INTERMEDIATE SUBPROCESS OPERATION CONDITION PARALLEL_GATEWAY PARALLEL_END CONDITION_END"`
+	Description       string                   `json:"description,omitempty"`
+	ClosesStepID      *uint                    `json:"closesStepId,omitempty"`
+	PreviousStepIDs   []uint                   `json:"previousStepIds,omitempty"`
+	ExecutorIDs       []uint                   `json:"executorIds,omitempty"`
+	ExecutorLoads     []ExecutorLoadRequest    `json:"executorLoads,omitempty"`
+	ParallelStepIDs   []uint                   `json:"parallelStepIds,omitempty"`
+	ParallelBranches  []ParallelBranchRequest  `json:"parallelBranches,omitempty"`
 	ConditionBranches []ConditionBranchRequest `json:"conditionBranches,omitempty"`
+	Metrics           *models.StepMetrics      `json:"metrics,omitempty"`
 }
 
 type UpdateStepRequest struct {
-	Name          string                `json:"Name" binding:"required"`
-	Type          models.StepType       `json:"Type" binding:"required"`
-	Description   string                `json:"Description,omitempty"`
-	ClosesStepID  *uint                 `json:"ClosesStepId,omitempty"`
-	PreviousStepIDs []uint              `json:"PreviousStepIds,omitempty"`
-	Executors     []models.Employee     `json:"Executors,omitempty"`
-	ExecutorLoads []ExecutorLoadRequest `json:"ExecutorLoads,omitempty"`
-	ParallelStepIDs []uint              `json:"ParallelStepIds,omitempty"`
-	ParallelBranches []ParallelBranchRequest `json:"ParallelBranches,omitempty"`
+	Name              string                   `json:"Name" binding:"required"`
+	Type              models.StepType          `json:"Type" binding:"required"`
+	Description       string                   `json:"Description,omitempty"`
+	ClosesStepID      *uint                    `json:"ClosesStepId,omitempty"`
+	PreviousStepIDs   []uint                   `json:"PreviousStepIds,omitempty"`
+	Executors         []models.Employee        `json:"Executors,omitempty"`
+	ExecutorLoads     []ExecutorLoadRequest    `json:"ExecutorLoads,omitempty"`
+	ParallelStepIDs   []uint                   `json:"ParallelStepIds,omitempty"`
+	ParallelBranches  []ParallelBranchRequest  `json:"ParallelBranches,omitempty"`
 	ConditionBranches []ConditionBranchRequest `json:"ConditionBranches,omitempty"`
-	Metrics       *models.StepMetrics   `json:"Metrics,omitempty"`
+	Metrics           *models.StepMetrics      `json:"Metrics,omitempty"`
 }
 
 type ReorderStepsRequest struct {
@@ -102,6 +103,7 @@ func (h *StepController) CreateStep(c *gin.Context) {
 		Description:      req.Description,
 		StepOrder:        stepOrder,
 		ClosesStepID:     req.ClosesStepID,
+		Metrics:          req.Metrics,
 	}
 
 	if len(req.ExecutorLoads) > 0 {
@@ -140,8 +142,8 @@ func (h *StepController) CreateStep(c *gin.Context) {
 		step.ConditionBranches = make([]models.ProcessConditionBranch, 0, len(req.ConditionBranches))
 		for _, b := range req.ConditionBranches {
 			step.ConditionBranches = append(step.ConditionBranches, models.ProcessConditionBranch{
-				NextStepID:          b.NextStepID,
-				ProbabilityPercent:  b.ProbabilityPercent,
+				NextStepID:         b.NextStepID,
+				ProbabilityPercent: b.ProbabilityPercent,
 			})
 		}
 	}
@@ -160,6 +162,37 @@ func (h *StepController) CreateStep(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, step)
+}
+
+// GetStep godoc
+// @Summary Получение данных этапа процесса
+// @Description Возвращает полную карточку этапа процесса по ID
+// @Tags process-steps
+// @Produce json
+// @Security BearerAuth
+// @Param id path int true "Step ID"
+// @Success 200 {object} models.ProcessStep
+// @Failure 400 {object} map[string]string "error"
+// @Failure 404 {object} map[string]string "error"
+// @Router /processes/steps/details/{id} [get]
+func (h *StepController) GetStep(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid step id"})
+		return
+	}
+
+	step, err := h.service.GetStep(uint(id))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": "step not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, step)
 }
 
 // UpdateStep godoc
@@ -185,12 +218,12 @@ func (h *StepController) UpdateStep(c *gin.Context) {
 	}
 
 	step := models.ProcessStep{
-		ID:          uint(id),
-		Name:        req.Name,
-		Type:        req.Type,
-		Description: req.Description,
+		ID:           uint(id),
+		Name:         req.Name,
+		Type:         req.Type,
+		Description:  req.Description,
 		ClosesStepID: req.ClosesStepID,
-		Metrics:     req.Metrics,
+		Metrics:      req.Metrics,
 	}
 
 	if len(req.ExecutorLoads) > 0 {
@@ -224,8 +257,8 @@ func (h *StepController) UpdateStep(c *gin.Context) {
 		step.ConditionBranches = make([]models.ProcessConditionBranch, 0, len(req.ConditionBranches))
 		for _, b := range req.ConditionBranches {
 			step.ConditionBranches = append(step.ConditionBranches, models.ProcessConditionBranch{
-				NextStepID:          b.NextStepID,
-				ProbabilityPercent:  b.ProbabilityPercent,
+				NextStepID:         b.NextStepID,
+				ProbabilityPercent: b.ProbabilityPercent,
 			})
 		}
 	}

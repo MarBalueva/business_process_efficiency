@@ -203,6 +203,36 @@ func (r *ProcessRepository) CreateStep(step *models.ProcessStep) error {
 		tx.Rollback()
 		return err
 	}
+	if step.Metrics != nil {
+		metric := models.StepMetrics{
+			StepID:         step.ID,
+			PlannedTimeMin: step.Metrics.PlannedTimeMin,
+		}
+		if err := tx.Create(&metric).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+		if step.Metrics.TimeStatistics != nil {
+			ts := step.Metrics.TimeStatistics
+			if err := tx.Create(&models.StepTimeStatistics{
+				MetricsID:   metric.ID,
+				MinTime:     ts.MinTime,
+				MinPercent:  ts.MinPercent,
+				AvgTime:     ts.AvgTime,
+				AvgPercent:  ts.AvgPercent,
+				MaxTime:     ts.MaxTime,
+				MaxPercent:  ts.MaxPercent,
+				WeightedAvg: ts.WeightedAvg,
+			}).Error; err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if err := r.recalculateStepFinalDurationTx(tx, step.ID); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
 	if err := r.syncAutoClosingStepTx(tx, base); err != nil {
 		tx.Rollback()
 		return err
@@ -1001,8 +1031,8 @@ func (r *ProcessRepository) ensureImplicitBranchesByPreviousTx(tx *gorm.DB, step
 			}
 			if count == 0 {
 				row := models.ProcessConditionBranch{
-					ConditionStepID:   prevID,
-					NextStepID:        stepID,
+					ConditionStepID:    prevID,
+					NextStepID:         stepID,
 					ProbabilityPercent: 0,
 				}
 				if err := tx.Create(&row).Error; err != nil {
